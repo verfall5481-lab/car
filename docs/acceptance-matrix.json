@@ -1,0 +1,182 @@
+{
+  "spec": "SPEC.md v0.4; section 23 takes precedence",
+  "scope": "Implement all locally achievable application behavior and configured external adapters; verify independently",
+  "status": "implemented_and_locally_verified_external_runtime_pending",
+  "owners": {
+    "orchestration": "primary",
+    "implementationModel": "gpt-6.1-sol",
+    "reasoningEffort": "xhigh",
+    "web": "apps/web and root package management",
+    "backend": "supabase and packages/contracts",
+    "vehicle": "apps/car"
+  },
+  "acceptanceGroups": [
+    {
+      "name": "Family, consent, invites and revocation",
+      "features": [
+        "F-01",
+        "F-02",
+        "F-03",
+        "F-18",
+        "F-19"
+      ],
+      "scenarios": [
+        "S-11",
+        "S-18",
+        "S-23",
+        "S-30",
+        "S-31",
+        "S-36",
+        "S-45",
+        "S-46",
+        "S-51",
+        "S-53"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
+    },
+    {
+      "name": "Locations, routines and family callers",
+      "features": [
+        "F-04",
+        "F-07",
+        "F-08",
+        "F-09",
+        "F-21",
+        "23.4",
+        "23.5"
+      ],
+      "scenarios": [
+        "S-01",
+        "S-05",
+        "S-06",
+        "S-16",
+        "S-17",
+        "S-28",
+        "S-32",
+        "S-47",
+        "S-52",
+        "S-54",
+        "S-55",
+        "S-56"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
+    },
+    {
+      "name": "Pickup responsibility and transactional lifecycle",
+      "features": [
+        "F-10",
+        "F-11",
+        "F-12",
+        "F-13",
+        "F-14",
+        "F-22"
+      ],
+      "scenarios": [
+        "S-02",
+        "S-07",
+        "S-08",
+        "S-09",
+        "S-10",
+        "S-19",
+        "S-27",
+        "S-29",
+        "S-34",
+        "S-37",
+        "S-38",
+        "S-39",
+        "S-40",
+        "S-41",
+        "S-42",
+        "S-50"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
+    },
+    {
+      "name": "Durable notifications, scheduled work and range",
+      "features": [
+        "F-15",
+        "F-16",
+        "F-17",
+        "F-20",
+        "7.3",
+        "9",
+        "16"
+      ],
+      "scenarios": [
+        "S-03",
+        "S-04",
+        "S-12",
+        "S-13",
+        "S-20",
+        "S-21",
+        "S-22",
+        "S-24",
+        "S-25",
+        "S-26",
+        "S-33",
+        "S-35",
+        "S-43",
+        "S-44",
+        "S-48",
+        "S-49"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
+    },
+    {
+      "name": "Vehicle connectivity and driving restrictions",
+      "features": [
+        "F-05",
+        "F-06",
+        "13"
+      ],
+      "scenarios": [
+        "S-14",
+        "S-15",
+        "S-19",
+        "S-34",
+        "S-39",
+        "S-54"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
+    }
+  ],
+  "environment": {
+    "postgres": "Isolated PostgreSQL 18.1 loopback 55432: five concurrency scenarios passed; cluster stopped after verification; existing 5432 untouched",
+    "docker": "Desktop startup failed in inference-manager socket initialization; no reset or data removal performed",
+    "externalServices": "No hosted project, paid provider, production message or publication authorized by this implementation milestone"
+  },
+  "physicalVerification": [
+    "iPhone installed PWA and push",
+    "Pleos device/emulator runtime and vehicle permissions",
+    "Registered SMS sender and provider delivery"
+  ],
+  "evidence": [
+    "implementation-status.json: final test counts and limitations",
+    "web-coverage.md: routes and provider boundaries",
+    "backend-status.md: SQL, concurrency, Edge and reproduction commands",
+    "backend-api.md: RPC contract",
+    "vehicle-verification.md: both APKs, unit tests, SDK and hardware boundaries",
+    "../supabase/tests/fixtures: actual SQL feed responses used by web/native tests"
+  ],
+  "interpretation": "Scenario IDs map requirements to implementation groups; they do not claim that all S-01 through S-56 passed full-stack or physical-device E2E tests.",
+  "verified": {
+    "postgresConcurrency": 5,
+    "nodeTests": 18,
+    "chromiumTests": 10,
+    "pgTap": 164,
+    "androidVariantTestExecutions": 16,
+    "builds": [
+      "web-demo",
+      "web-live",
+      "android-demo",
+      "android-pleos"
+    ],
+    "edgeMockTests": 7
+  },
+  "unverified": [
+    "Real Supabase service stack and scheduled extensions",
+    "External delivery, map, OAuth and CAPTCHA providers",
+    "Physical installed PWA and Pleos/AAOS runtime",
+    "Vehicle automatic arrival and background/HUD policy"
+  ]
+}

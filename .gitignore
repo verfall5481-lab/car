@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.local
+.DS_Store
+.idea/
+.gradle/
+**/build/
+local.properties
+playwright-report/
+test-results/
+coverage/
+supabase/.branches/
+supabase/.temp/

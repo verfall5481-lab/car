@@ -1,0 +1,27 @@
+packages:
+  - apps/web
+  - packages/*
+
+minimumReleaseAge: 20160
+
+overrides:
+  # Keep the initial transitive resolutions within the release-age policy.
+  '@babel/core': 7.29.7
+  '@babel/generator': 7.29.8
+  '@babel/helper-compilation-targets': 7.29.7
+  '@babel/helper-module-transforms': 7.29.7
+  '@babel/helper-string-parser': 7.29.11
+  '@babel/helpers': 7.29.10
+  '@babel/parser': 7.29.11
+  '@babel/traverse': 7.29.10
+  baseline-browser-mapping: 2.11.33
+  browserslist: 4.29.4
+  caniuse-lite: 1.0.30001819
+  electron-to-chromium: 1.5.464
+  node-releases: 2.0.60
+  vite>postcss: 8.5.31
+  vite>rollup: 4.65.0
+  semver@6: 6.3.1
+
+onlyBuiltDependencies:
+  - esbuild

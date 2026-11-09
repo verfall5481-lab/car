@@ -1,0 +1,44 @@
+{
+  "suppliedBoards": 29,
+  "sourceBatches": [10, 10, 9],
+  "productAuthority": "../SPEC.md",
+  "implementationModel": "gpt-6.1-sol",
+  "implementationReasoningEffort": "xhigh",
+  "visualDirection": {
+    "mobile": "White background, charcoal text and primary buttons, amber selections, generous spacing",
+    "vehicle": "Dark charcoal background, large white type, amber primary action, gray secondary action",
+    "status": {"success": "green", "warningOrDestructive": "red", "attention": "amber"},
+    "guardianNavigation": ["오늘", "루틴", "가족"],
+    "confirmationPattern": "Bottom sheets on mobile; compact two-action cards in vehicle"
+  },
+  "repeatedBoards": [
+    {"file": "batch-3-03.jpg", "matches": "batch-1-01.jpg"},
+    {"file": "batch-3-04.jpg", "matches": "batch-1-07.jpg"},
+    {"file": "batch-3-05.jpg", "matches": "batch-1-05.jpg"},
+    {"file": "batch-3-06.jpg", "matches": "batch-1-03.jpg"},
+    {"file": "batch-3-07.jpg", "matches": "batch-1-09.jpg"},
+    {"file": "batch-3-08.jpg", "matches": "batch-2-01.jpg"},
+    {"file": "batch-3-09.jpg", "matches": "batch-2-03.jpg"}
+  ],
+  "variants": [
+    {"files": ["batch-1-06.jpg", "batch-1-07.jpg"], "difference": "Autofilled connection code appears in two rows versus one row"},
+    {"files": ["batch-2-03.jpg", "batch-2-05.jpg"], "difference": "Handoff note limit is shown as 40 versus 50; resolve against SPEC"}
+  ],
+  "specV04AdditionsNotRepresentedByDedicatedBoards": [
+    "Adult rider setup and self consent",
+    "Guardian requests pickup for self",
+    "can_request and can_drive member permissions",
+    "C-07 pickup map-pin selection and pickup note",
+    "P1 saved pickup points per place"
+  ],
+  "reviewJourneys": [
+    "Request -> accept -> depart -> arrive -> explicit boarding confirmation",
+    "Handoff pending -> decline or expiration retains original assignee -> accept changes assignee",
+    "Unconfirmed GPS location -> confirmation required before navigation",
+    "Navigation failure preserves departure and offers retry",
+    "Previous navigation callback ignored after destination/session switch",
+    "Routine ready early updates existing occurrence instead of creating duplicate request",
+    "Parked versus driving UI restrictions",
+    "Offline prevents server-dependent actions and labels stale vehicle values"
+  ]
+}

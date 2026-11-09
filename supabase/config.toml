@@ -1,0 +1,47 @@
+# Local Supabase only. The private schema is intentionally absent from the Data API.
+project_id = "deriro"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.seed]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+additional_redirect_urls = ["http://localhost:5173"]
+enable_anonymous_sign_ins = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+otp_length = 6
+otp_expiry = 600
+
+[auth.email.template.confirmation]
+subject = "데리러 로그인 숫자"
+content_path = "./supabase/templates/email-otp.html"
+
+[auth.email.template.magic_link]
+subject = "데리러 로그인 숫자"
+content_path = "./supabase/templates/email-otp.html"
+
+[inbucket]
+enabled = true
+port = 54324
+
+[functions.dispatch-notifications]
+verify_jwt = false
+
+[functions.geo-reverse]
+verify_jwt = false

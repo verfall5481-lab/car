@@ -1,0 +1,114 @@
+{
+  "date": "2026-11-09",
+  "milestone": "Local implementation and configured adapters verified",
+  "spec": "SPEC.md v0.4; section 23 takes precedence",
+  "coordination": {
+    "primary": "Orchestration, integration review and acceptance verification",
+    "implementationModel": "gpt-6.1-sol",
+    "implementationReasoningEffort": "xhigh"
+  },
+  "preview": {
+    "guardian": "http://127.0.0.1:5173/p/",
+    "rider": "http://127.0.0.1:5173/c/",
+    "vehicleSimulator": "http://127.0.0.1:5173/v/",
+    "mode": "Browser demo with shared local storage; not hosted Supabase",
+    "liveMode": "VITE_APP_MODE=live plus backend public URL/key; see README"
+  },
+  "implemented": {
+    "web": "OTP and optional Kakao PKCE/Turnstile; family, consent and device linking; guardian/rider requests; handoff and lifecycle; places, pickup points and routines; vehicle pairing; scoped push and settings",
+    "backend": "Five migrations with family-scoped RPCs, hashed single-use codes, transactional pickup operations, feeds, routines, durable notification outbox, escalation and retention, range warnings, four Edge endpoints",
+    "vehicle": "Separate demo/Pleos flavors, encrypted auth/cache, pairing, typed RPC/feed, telemetry, driving restrictions, navigation results, manual arrival and explicit boarding",
+    "automation": "Pinned locks and GitHub Actions verification workflow; no publication"
+  },
+  "verification": {
+    "frozenDependencyInstall": "passed",
+    "webTypecheck": "passed on final source",
+    "webProductionBuild": "demo and live passed; separate live artifact under ignored test-results/live-build",
+    "nodeTests": {
+      "passed": 18,
+      "scope": "9 shared state-machine and 9 web domain/SQL projection/worker tests",
+      "primaryRerun": true
+    },
+    "browserTests": {
+      "passed": 10,
+      "scope": "5 demo and 5 configured-mode journeys with mocked Auth/RPC/provider responses",
+      "primaryRerun": true,
+      "realExternalServices": false
+    },
+    "independentVisibleBrowserReview": "Adult rider selects pickup point; guardian and vehicle receive note; vehicle departs and arrives; rider explicitly confirms boarding",
+    "sqlTests": {
+      "passed": 164,
+      "suites": {
+        "operations": 77,
+        "pickupLifecycle": 53,
+        "scheduler": 34
+      },
+      "runtime": "PGlite 0.3.15 / PostgreSQL 17.5 with Supabase Auth shim",
+      "primaryRerun": true
+    },
+    "sqlConcurrency": {
+      "passed": 5,
+      "runtime": "Isolated PostgreSQL 18.1, real concurrent connections",
+      "scope": "Acceptance race, acceptance versus offer, single-use invitation race, disjoint worker claims, expired lease reclamation",
+      "primaryRerun": true
+    },
+    "edgeFunctions": {
+      "typechecked": 4,
+      "mockTestsPassed": 7,
+      "runtime": "Deno 2.5.6 with frozen deno.lock",
+      "primaryTestRerun": true,
+      "externalDelivery": false
+    },
+    "android": {
+      "flavorsBuilt": [
+        "demoDebug",
+        "pleosDebug"
+      ],
+      "unitTestExecutionsPassed": 16,
+      "byVariant": {
+        "demoDebug": 4,
+        "pleosDebug": 12
+      },
+      "lintErrorsPerVariant": 0,
+      "lintWarningsPerVariant": 5,
+      "warningScope": "Pinned dependency update advisories",
+      "apkSignatures": "both verified",
+      "releaseCleartextBlocked": true,
+      "deviceRuntimeVerified": false
+    },
+    "dependencyReleaseAge": {
+      "checkedNpmLockVersions": 173,
+      "failures": 0,
+      "minimumAgeDays": 14,
+      "pleosSdkAgeDays": 21
+    },
+    "sqlGeneratedFixtures": "supabase/tests/fixtures; consumed by web and native regression tests"
+  },
+  "reviewFixes": [
+    "Handoff retains sender until acceptance; departure cancels pending offer",
+    "Requester and non-driver filtering, GPS uncertainty and family authorization",
+    "Arrival differs from boarding; navigation failure keeps departure",
+    "Revoked vehicle pairing restarts while parked; offer identity survives location confirmation",
+    "Receipt-anchored server clock; family cache clears on auth identity change",
+    "Range warning revisions permit re-alert within one transaction",
+    "Stale claims and queued notifications revalidated before sending",
+    "Cancellation reason and vehicle RPC wire contracts aligned"
+  ],
+  "externalAndPhysicalVerificationRemaining": [
+    "Actual Supabase GoTrue/PostgREST/Realtime/Edge Runtime/cron/pg_net; Docker Desktop engine unavailable here",
+    "Real email, Kakao maps/OAuth, Turnstile, VAPID push and registered SMS provider setup/delivery",
+    "Physical iPhone installed-PWA session/permissions/push and Android installation",
+    "Pleos/AAOS sensors, permissions, native navigation, display and driving-policy approval",
+    "Automatic vehicle arrival disabled because SDK callback lacks provable request identity; manual arrival implemented",
+    "Vehicle background/head-up delivery uses SPEC foreground-only fallback pending platform policy verification",
+    "Global Supabase CAPTCHA needs a vehicle challenge/provisioning path before enabling it for a shared native/web project"
+  ],
+  "implementationChoices": [
+    "Native HttpURLConnection Auth/REST replaces proposed Supabase-KT/Ktor; mocked HTTP and SQL fixtures tested",
+    "Domestic map-pin validation uses coordinate bounds and optional 50 km distance, not administrative polygons",
+    "Server demo reset rebuilds runtime pickups from configured routines; external Auth accounts are not recreated"
+  ],
+  "cleanup": "Temporary loopback PostgreSQL 55432 stopped; existing 5432 service unchanged; demo preview left running",
+  "sourceAssets": "29 supplied image boards retained including variants; personal application DOCX excluded",
+  "publication": "Local only; no GitHub push or hosting deployment"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "/p/",
+  "name": "데리러 가족",
+  "short_name": "데리러 가족",
+  "lang": "ko",
+  "start_url": "/p/",
+  "scope": "/p/",
+  "display": "standalone",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "/icons/family-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/family-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "ok": true,
+  "data": {
+    "active": [
+      {
+        "id": "22870913-2cc2-4862-8731-055ce7090a30",
+        "offer": {
+          "id": "61696445-9bb8-41e9-9502-e59b63e5b0d5",
+          "note": "테스트 부탁",
+          "origin": "guardian",
+          "status": "pending",
+          "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+          "pickup_id": "22870913-2cc2-4862-8731-055ce7090a30",
+          "created_at": "2026-11-09T05:57:45.586+00:00",
+          "expires_at": "2026-11-09T06:02:45.586+00:00",
+          "declined_by": [],
+          "resolved_at": null,
+          "to_member_id": "aca92667-c514-49f4-a3dd-409612dfc47c",
+          "from_member_id": "f9c12593-33e2-438e-af18-e9d9f5f3a981",
+          "resolved_by_member_id": null
+        },
+        "source": "request",
+        "status": "assigned",
+        "version": 2,
+        "dest_lat": 37.5501,
+        "dest_lng": 127.1,
+        "pin_note": "후문 벤치",
+        "place_id": "a2225302-efe6-4232-82cc-43631eecca5b",
+        "rider_id": "3915c169-9a90-4faa-9aaa-cdd90e168756",
+        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "wanted_at": "2026-11-09T06:07:45.586+00:00",
+        "arrived_at": null,
+        "child_name": "할머니",
+        "created_at": "2026-11-09T05:57:45.586+00:00",
+        "dest_label": "후문",
+        "expired_at": null,
+        "nav_status": "none",
+        "rider_name": "할머니",
+        "routine_id": null,
+        "updated_at": "2026-11-09T05:57:45.586+00:00",
+        "vehicle_id": "f001f39e-dac7-4060-ae81-5f11254e9e55",
+        "accepted_at": "2026-11-09T05:57:45.586+00:00",
+        "en_route_at": null,
+        "cancelled_at": null,
+        "completed_at": null,
+        "cancel_reason": null,
+        "is_customized": false,
+        "arrived_source": null,
+        "nav_session_id": null,
+        "rider_ready_at": null,
+        "location_source": "saved_point",
+        "occurrence_date": null,
+        "pickup_point_id": "64f6d06d-8e2b-403b-b9ce-198e89cb6705",
+        "rider_member_id": null,
+        "assignment_round": 1,
+        "cancelled_by_kind": null,
+        "completed_by_kind": null,
+        "assignee_member_id": "f9c12593-33e2-438e-af18-e9d9f5f3a981",
+        "location_confirmed": true,
+        "not_met_reported_at": null,
+        "destination_revision": 1,
+        "last_start_action_id": null,
+        "assignee_display_name": "아빠",
+        "closed_unconfirmed_at": null,
+        "nav_destination_revision": null,
+        "routine_offer_created_at": null
+      }
+    ],
+    "alerts": [
+      {
+        "id": "d2a56352-9ca9-461b-b2ea-ca4ef473d172",
+        "type": "low_range",
+        "range_km": 5,
+        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "pickup_ids": [
+          "22870913-2cc2-4862-8731-055ce7090a30"
+        ],
+        "updated_at": "2026-11-09T05:57:45.586+00:00",
+        "vehicle_id": "f001f39e-dac7-4060-ae81-5f11254e9e55",
+        "required_km": 27.1,
+        "resolved_at": null,
+        "pickup_count": 1,
+        "is_demo_value": true,
+        "alert_revision": 1,
+        "acknowledged_at": null
+      }
+    ],
+    "timeline": [],
+    "server_time": "2026-11-09T05:57:45.586+00:00",
+    "pending_offers_to_me": [],
+    "notification_failures": {
+      "sms_failed": 0
+    }
+  }
+}

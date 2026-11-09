@@ -1,0 +1,15 @@
+{
+  "name": "@deriro/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts",
+    "test:sql": "node test-db/embedded.mjs",
+    "test:sql:concurrency": "node test-db/concurrency.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.15"
+  }
+}

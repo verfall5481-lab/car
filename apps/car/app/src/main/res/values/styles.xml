@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">데리러</string>
+    <style name="Theme.DeriroCar" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#161A1F</item>
+        <item name="android:colorAccent">#F0B74F</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

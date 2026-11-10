@@ -66,7 +66,10 @@ export type ActionSpec =
   | { type: "vehicle_start"; withOffer?: boolean; retry?: boolean; version?: Version }
   | { type: "nav_result"; result: "ok" | "failed" }
   | { type: "arrive"; version?: Version }
-  /** Navigation arrival callback. `session`: the newest or the one before it; `revision`: the one the session was issued for, or the pickup's current one. */
+  /**
+   * Navigation arrival callback. `session`: the newest session or the one before it. `revision`: the revision that
+   * session was issued for, or the pickup's current one.
+   */
   | { type: "nav_arrival"; session?: "current" | "previous"; revision?: "session" | "current" }
   | { type: "board"; version?: Version }
   | { type: "cancel"; reason?: CancelReason; version?: Version }

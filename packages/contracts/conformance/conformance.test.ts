@@ -32,6 +32,8 @@ for (const scenario of scenarios) {
 test("every known divergence is reproduced by a scenario", () => {
   const unused = knownDivergences.filter(({ id }) => !seen.has(id)).map(({ id }) => id);
   assert.deepEqual(unused, []);
-  for (const entry of knownDivergences) console.log(`# known divergence [${entry.wrong} wrong] ${entry.id}: ${entry.summary} (${entry.spec})`);
+  for (const entry of knownDivergences) {
+    console.log(`# known divergence [${entry.wrong} wrong] ${entry.id}: ${entry.summary} (${entry.spec})`);
+  }
   for (const gap of inherentGaps) console.log(`# not comparable: ${gap.field}: ${gap.reason}`);
 });

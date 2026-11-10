@@ -96,10 +96,11 @@ export const scenarios: readonly Scenario[] = [
         },
       },
       { actor: "mom", do: { type: "offer", to: "dad" }, expect: { offer: { from: "mom", to: "dad" }, events: ["offered"] } },
+      { actor: "dad", do: { type: "respond", response: "accept", vehicle: "aunt" }, expect: { code: "VALIDATION", assignee: "mom" } },
       {
-        actor: "dad", do: { type: "respond", response: "accept" },
+        actor: "dad", do: { type: "respond", response: "accept", vehicle: "car" },
         expect: {
-          assignee: "dad", vehicle: null, version: 3, round: 2, set: ["acceptedAt"], offer: null,
+          assignee: "dad", vehicle: "car", version: 3, round: 2, set: ["acceptedAt"], offer: null,
           resolved: { from: "mom", status: "accepted", by: "dad" }, events: ["offer_accepted"],
         },
       },
@@ -687,6 +688,21 @@ export const scenarios: readonly Scenario[] = [
         actor: "dad", do: { type: "accept" }, divergence: { spec: "demo-scheduler-has-no-routine-offer" },
         expect: { assignee: "dad", resolved: { from: null, status: "accepted", by: "dad" }, events: ["accepted"] },
       },
+    ],
+  },
+  {
+    name: "42. 4.4 #11, 8.3.1: the sender's car starting the trip it offered away cancels the offer",
+    pickups: [routine({ assignee: "dad", vehicle: "car", wantedInMin: 10 })],
+    steps: [
+      { actor: "dad", do: { type: "offer", to: "mom" }, expect: { offer: { from: "dad", to: "mom", expiresInMin: 5 } } },
+      {
+        actor: "car", do: { type: "vehicle_start" },
+        expect: {
+          status: "en_route", assignee: "dad", offer: null, resolved: { from: "dad", status: "cancelled", by: null },
+          events: ["en_route"], active: { car: "p" },
+        },
+      },
+      { actor: "mom", do: { type: "respond", response: "accept" }, expect: { code: "OFFER_NOT_PENDING", assignee: "dad" } },
     ],
   },
 ];

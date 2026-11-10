@@ -24,7 +24,10 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
   },
   { field: "sql.navStatus", reason: "TS has no nav_status and no report_nav_result; the demo keeps navigation failure on the car." },
   { field: "sql.customized", reason: "TS has no is_customized; routine revision lives only in SQL." },
-  { field: "sql.cancelReason", reason: "TS validates the reason but does not store it." },
+  {
+    field: "sql.cancelReason",
+    reason: "TS neither stores nor checks the reason at run time (only its type does); SQL maps and validates it.",
+  },
   {
     field: "sql.stamps",
     reason: "TS has no completed_at, cancelled_at, expired_at or closed_unconfirmed_at; the status says the same.",
@@ -33,6 +36,30 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
   {
     field: "offers without a sender (demo shape)",
     reason: "demo-domain.ts makePickup creates requests without the family-wide request offer of create_request.",
+  },
+  {
+    field: "report_nav_result",
+    reason: "SQL only. The TS driver treats it as a no-op; those steps compare state, and their events are marked per step.",
+  },
+  {
+    field: "routine recompute and member removal",
+    reason: "SQL only (revise_routine with routine_reassigned, 4.4 #12; leave_family/remove_member with member_reassigned). " +
+      "TS has no such actions and the demo's routine editor does not recompute occurrences.",
+  },
+  {
+    field: "parked state",
+    reason: "TS reads Actor.parked; SQL reads a gear 'P' row no older than 30 s. The harness refreshes that row before each " +
+      "step, so stale telemetry is not compared.",
+  },
+  {
+    field: "request preconditions",
+    reason: "Request creation is setup: SQL's 3-per-10-minutes limit and ACTIVE_REQUEST_EXISTS, and the demo's NO_DRIVER and " +
+      "ACTIVE_REQUEST checks, are not compared.",
+  },
+  {
+    field: "vehicle_decline and the scheduler",
+    reason: "Neither is in packages/contracts. The TS driver mirrors apps/web (vehicle.tsx cannotGo/answerOffer, " +
+      "demo-domain.ts setDemoTime); SQL runs vehicle_decline and run_escalations.",
   },
 ];
 

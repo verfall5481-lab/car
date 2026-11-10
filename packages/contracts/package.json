@@ -5,7 +5,8 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts conformance/*.test.ts",
+    "test:conformance": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test conformance/*.test.ts",
     "test:sql": "node test-db/embedded.mjs",
     "test:sql:concurrency": "node test-db/concurrency.mjs"
   },

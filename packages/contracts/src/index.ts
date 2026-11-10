@@ -341,9 +341,17 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (pickup.status !== "open" && pickup.status !== "assigned") return fail("INVALID_STATE");
       const vehicleId = getVehicleId(action.vehicleId);
       if (vehicleId === undefined) return fail("VALIDATION");
+      // 4.4 #5: only a target accepts an offer. The default assignee confirming a trip they had offered away
+      // (a handoff or the car's "못 가요") withdraws that offer instead (4.4 #9, F-11), as accept_pickup does.
+      let nextOffer = offer;
+      if (offer?.status === "pending") {
+        nextOffer = isOfferTarget(offer)
+          ? { ...offer, status: "accepted", acceptedBy: member.id }
+          : { ...offer, status: "cancelled" };
+      }
       return ok(update({
         ...assign(member.id, vehicleId ?? (pickup.assigneeId === member.id ? pickup.vehicleId : null)),
-        offer: offer?.status === "pending" ? { ...offer, status: "accepted", acceptedBy: member.id } : offer,
+        offer: nextOffer,
       }), "accepted");
     }
     case "offer": {

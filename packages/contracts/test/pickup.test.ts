@@ -207,6 +207,35 @@ test("a pin and a saved point are confirmed, GPS must be accurate or explicitly 
   assert.equal(successful(act(confirmed, dad, { type: "depart", expectedVersion: 2 })).status, "en_route");
 });
 
+test("4.4 #5/#9: the default assignee confirming a trip they offered away withdraws the offer, not accepts it", () => {
+  const routine = pickup({
+    source: "routine", status: "assigned", assigneeId: dad.id, vehicleId: car.id, assignmentRound: 1,
+    wantedAt: now + 60 * 60_000, offer: null,
+  });
+  const offered = successful(act(routine, dad, { type: "offer", expectedVersion: 1, offerId: "handoff", toMemberId: mom.id }));
+  const confirmed = act(offered, dad, { type: "accept" });
+  const accepted = successful(confirmed);
+  assert.deepEqual(confirmed.events, ["accepted"]);
+  assert.equal(accepted.assigneeId, dad.id);
+  assert.equal(accepted.acceptedAt, now);
+  assert.equal(accepted.assignmentRound, 1);
+  assert.equal(accepted.offer?.status, "cancelled");
+  assert.equal(accepted.offer?.acceptedBy, undefined);
+  rejected(act(accepted, mom, { type: "respond_offer", expectedVersion: 2, offerId: "handoff", response: "accept" }),
+    "OFFER_NOT_PENDING");
+
+  // The same for the car's "못 가요", which offers to everyone in the driver's name.
+  const declined = successful(act(routine, car, { type: "offer", expectedVersion: 1, offerId: "car-offer" }));
+  const byPhone = successful(act(declined, dad, { type: "accept" }));
+  assert.equal(byPhone.offer?.status, "cancelled");
+  assert.equal(byPhone.offer?.acceptedBy, undefined);
+
+  // A family-wide request offer is still accepted by whoever takes the request.
+  const taken = successful(act(pickup(), mom, { type: "accept" }));
+  assert.equal(taken.offer?.status, "accepted");
+  assert.equal(taken.offer?.acceptedBy, mom.id);
+});
+
 test("permission parity with SQL: lost can_drive keeps handoff, blocks departure; a car offers only to everyone", () => {
   const held = pickup({ status: "assigned", assigneeId: "passenger", acceptedAt: now, offer: null, version: 2 });
   rejected(act(held, { kind: "member", id: "passenger" }, { type: "depart", expectedVersion: 2 }), "FORBIDDEN");

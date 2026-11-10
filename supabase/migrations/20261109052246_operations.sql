@@ -185,7 +185,12 @@ begin
       or effective_at < now()
     then
       update public.pickup_offers set status = 'cancelled',resolved_at = now() where pickup_id = occurrence.id and status = 'pending';
-      update public.pickups set status = 'cancelled',cancelled_at = now(),cancel_reason = 'routine_archived' where id = occurrence.id;
+      update public.pickups set status = 'cancelled',cancelled_at = now(),cancel_reason = 'routine_archived',cancelled_by_kind = 'system'
+        where id = occurrence.id returning * into occurrence;
+      -- A system cancellation (F-14) is still a transition with an event (4.5), so a default assignee who was
+      -- already reminded about the trip is told it is off.
+      perform deriro_private.add_event(occurrence, null, 'cancelled', jsonb_build_object('cause',
+        case when new.archived_at is not null then 'routine_archived' else 'routine_changed' end));
     else
       update public.pickups set status = case when driver_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
         rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = driver_id,
@@ -224,6 +229,7 @@ declare
   place public.places;
   point public.pickup_points;
   routine public.routines;
+  occurrence public.pickups;
   week_arg smallint := (p_data->>'weekdays')::smallint;
   time_arg time := (p_data->>'time')::time;
   notify_arg int := (p_data->>'notify_before')::int;
@@ -329,8 +335,15 @@ begin
       update public.pickup_offers set status='cancelled',resolved_at=now()
         where status='pending' and pickup_id in (select id from public.pickups where routine_id=routine.id
           and wanted_at>=now() and status in ('open','assigned'));
-      update public.pickups set status='cancelled',cancel_reason='skipped',cancelled_at=now(),is_customized=true
-        where routine_id=routine.id and wanted_at>=now() and status in ('open','assigned');
+      -- This guardian skips each future occurrence, including ones another guardian already accepted, so each one
+      -- records who cancelled it and queues the cancellation notice (F-14, 16.1 보호자 취소).
+      for occurrence in select * from public.pickups p where p.routine_id=routine.id and p.wanted_at>=now()
+        and p.status in ('open','assigned') order by p.id
+      loop
+        update public.pickups set status='cancelled',cancel_reason='skipped',cancelled_at=now(),is_customized=true,
+          cancelled_by_kind='guardian' where id=occurrence.id returning * into occurrence;
+        perform deriro_private.add_event(occurrence,actor,'cancelled','{"cause":"routine_paused"}');
+      end loop;
     end if;
     update public.routines set rider_id=rider_id_arg,rider_member_id=member_id_arg,place_id=place.id,pickup_point_id=point_id_arg,
       weekdays=week_arg,time_local=time_arg,notify_before_min=notify_arg,default_assignee_member_id=driver_id_arg,

@@ -22,6 +22,21 @@ site_url = "http://127.0.0.1:5173"
 additional_redirect_urls = ["http://localhost:5173"]
 enable_anonymous_sign_ins = true
 
+# Rider link codes are 8 digits and claim_rider_invite allows each auth user 5 claims per 10 minutes. A new
+# anonymous user is the only way past that, so these limits also bound code guessing (docs/backend-status.md).
+# Optional CAPTCHA ([auth.captcha], hcaptcha or turnstile) also needs client changes and is not configured.
+[auth.rate_limit]
+# Anonymous sign-ins per hour per IP address (CLI default 30). Rider devices and cars sign in anonymously.
+anonymous_users = 10
+# Sign-up and sign-in requests per 5 minutes per IP address, excluding anonymous sign-ins (CLI default 30).
+sign_in_sign_ups = 15
+# OTP and magic link verifications per 5 minutes per IP address (CLI default 30). Covers the 6-digit email OTP.
+token_verifications = 15
+# Token endpoint requests, session refreshes included, per 5 minutes per IP address (CLI default 150).
+token_refresh = 150
+# Emails per hour for the whole project. Applied only with custom SMTP; the built-in sender keeps its own limit.
+email_sent = 30
+
 [auth.email]
 enable_signup = true
 enable_confirmations = true

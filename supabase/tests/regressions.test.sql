@@ -239,5 +239,164 @@ select is((select count(*) from public.pickups where routine_id=pg_temp.fixture(
 select is(deriro_private.maintenance('occurrences')->>'ok','true','the scheduler job runs');
 select ok((select count(*) from public.pickups where routine_id=pg_temp.fixture(71))>=1,'the scheduler creates the occurrences');
 
+-- A family of three drivers for the offer-resolution and cancellation-notice regressions below.
+insert into auth.users(id,is_anonymous) values
+  (pg_temp.fixture(1001),false),(pg_temp.fixture(1002),false),(pg_temp.fixture(1003),false),(pg_temp.fixture(1004),true);
+insert into public.families(id,name) values(pg_temp.fixture(1010),'인계 가족');
+insert into public.family_members(id,family_id,auth_user_id,display_name,role,can_drive,can_request,location_consented_at) values
+  (pg_temp.fixture(1011),pg_temp.fixture(1010),pg_temp.fixture(1001),'엄마','owner',true,true,now()),
+  (pg_temp.fixture(1012),pg_temp.fixture(1010),pg_temp.fixture(1002),'아빠','guardian',true,true,now()),
+  (pg_temp.fixture(1013),pg_temp.fixture(1010),pg_temp.fixture(1003),'이모','guardian',true,true,now());
+insert into public.riders(id,family_id,display_name,kind,consent_basis,location_consented_at) values
+  (pg_temp.fixture(1021),pg_temp.fixture(1010),'서연','child','guardian',now()),
+  (pg_temp.fixture(1022),pg_temp.fixture(1010),'민준','child','guardian',now()),
+  (pg_temp.fixture(1023),pg_temp.fixture(1010),'지우','child','guardian',now());
+insert into public.places(id,family_id,label,kind,lat,lng) values(pg_temp.fixture(1031),pg_temp.fixture(1010),'수학학원','academy',37.55,127.1);
+insert into public.vehicles(id,family_id,auth_user_id,nickname,current_driver_member_id) values
+  (pg_temp.fixture(1041),pg_temp.fixture(1010),pg_temp.fixture(1004),'아빠 차',pg_temp.fixture(1012));
+insert into public.vehicle_states(vehicle_id,gear,collected_at,range_km) values(pg_temp.fixture(1041),'P',now(),500);
+insert into public.routines(id,family_id,rider_id,place_id,weekdays,time_local,default_assignee_member_id,start_date) values
+  (pg_temp.fixture(1071),pg_temp.fixture(1010),pg_temp.fixture(1021),pg_temp.fixture(1031),127,'17:30',pg_temp.fixture(1011),(now() at time zone 'Asia/Seoul')::date),
+  (pg_temp.fixture(1072),pg_temp.fixture(1010),pg_temp.fixture(1022),pg_temp.fixture(1031),127,'17:30',pg_temp.fixture(1013),(now() at time zone 'Asia/Seoul')::date),
+  (pg_temp.fixture(1073),pg_temp.fixture(1010),pg_temp.fixture(1023),pg_temp.fixture(1031),127,'17:30',pg_temp.fixture(1013),(now() at time zone 'Asia/Seoul')::date),
+  (pg_temp.fixture(1074),pg_temp.fixture(1010),pg_temp.fixture(1021),pg_temp.fixture(1031),127,'08:00',pg_temp.fixture(1012),(now() at time zone 'Asia/Seoul')::date);
+-- Future routine occurrences. Default assignments have no accepted_at; 1056 and 1057 were explicitly accepted.
+insert into public.pickups(id,family_id,rider_id,source,routine_id,occurrence_date,status,assignee_member_id,vehicle_id,place_id,
+  location_source,location_confirmed,dest_lat,dest_lng,dest_label,wanted_at,accepted_at,is_customized,assignment_round)
+select pg_temp.fixture(x.n),pg_temp.fixture(1010),pg_temp.fixture(x.rider),'routine',pg_temp.fixture(x.routine),
+  (now() at time zone 'Asia/Seoul')::date+x.days,'assigned',pg_temp.fixture(x.assignee),case when x.car then pg_temp.fixture(1041) end,
+  pg_temp.fixture(1031),'saved_place',true,37.55,127.1,'수학학원',now()+make_interval(days=>x.days),
+  case when x.accepted then now()-interval '1 hour' end,x.accepted,1
+from (values (1051,1021,1071,1,1011,false,false),(1052,1021,1071,2,1012,true,false),(1058,1021,1071,3,1011,false,false),
+  (1054,1022,1072,1,1013,false,true),(1055,1023,1073,1,1013,false,false),(1056,1023,1073,2,1012,false,true),
+  (1057,1021,1074,1,1012,false,true)) x(n,rider,routine,days,assignee,car,accepted);
+
+-- Offer resolution on acceptance (4.4 #5, #9; F-11). The default assignee 엄마 hands off to 아빠 and then
+-- confirms the trip herself. A sender never accepts her own offer, so confirming withdraws it.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+insert into saved values ('own_handoff',public.offer_pickup(pg_temp.fixture(1051),
+  (select version from public.pickups where id=pg_temp.fixture(1051)),pg_temp.fixture(1012),'부탁해'));
+select is(value#>>'{data,offer,status}','pending','the default assignee hands the occurrence to 아빠') from saved where name='own_handoff';
+insert into saved values ('own_confirm',public.accept_pickup(pg_temp.fixture(1051)));
+select is(value#>>'{data,pickup,assignee_member_id}',pg_temp.fixture(1011)::text,'confirming keeps 엄마 as the assignee') from saved where name='own_confirm';
+reset role;
+select is((select status::text||':'||resolved_by_member_id from public.pickup_offers
+  where id=(select (value#>>'{data,offer,id}')::uuid from saved where name='own_handoff')),
+  'cancelled:'||pg_temp.fixture(1011),'confirming her own trip withdraws 엄마''s pending handoff instead of accepting it');
+select is((select count(*) from public.pickup_offers where pickup_id=pg_temp.fixture(1051) and status='accepted'),0::bigint,
+  'no offer on the trip is recorded as accepted by its sender');
+select ok((select accepted_at is not null from public.pickups where id=pg_temp.fixture(1051)),'the first explicit acceptance is recorded');
+select is((select string_agg(template||':'||status,',' order by id) from public.notifications_outbox
+  where pickup_id=pg_temp.fixture(1051) and recipient_member_id=pg_temp.fixture(1012)),'offer_to_you:skipped,pickup_accepted:pending',
+  '아빠''s handoff card is withdrawn and he is only told that 엄마 has the trip');
+select is((select payload->>'who' from public.notifications_outbox where pickup_id=pg_temp.fixture(1051)
+  and recipient_member_id=pg_temp.fixture(1012) and template='pickup_accepted'),'엄마','the notice names 엄마, who is still going');
+select is((select count(*) from public.notifications_outbox where pickup_id=pg_temp.fixture(1051) and template='offer_accepted'),0::bigint,
+  'nobody is told the handoff was accepted');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001002';
+select is(public.respond_offer((value#>>'{data,offer,id}')::uuid,'accept',(select version from public.pickups where id=pg_temp.fixture(1051)))#>>'{error,code}',
+  'OFFER_NOT_PENDING','the recipient can no longer accept the withdrawn handoff') from saved where name='own_handoff';
+reset role;
+
+-- The same for a vehicle-origin offer: 아빠's car says "못 가요" on his default occurrence, then 아빠 confirms by phone.
+insert into saved values ('version_1052',to_jsonb((select version from public.pickups where id=pg_temp.fixture(1052))));
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select is(public.vehicle_decline(pg_temp.fixture(1052),(select value::int from saved where name='version_1052'))#>>'{data,offer,origin}','vehicle',
+  'the assigned car hands the occurrence to everyone');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001002';
+select is(public.accept_pickup(pg_temp.fixture(1052))#>>'{data,pickup,vehicle_id}',pg_temp.fixture(1041)::text,'아빠 confirms his own trip');
+reset role;
+select is((select string_agg(origin||':'||status||':'||resolved_by_member_id,',') from public.pickup_offers where pickup_id=pg_temp.fixture(1052)),
+  'vehicle:cancelled:'||pg_temp.fixture(1012),'the car''s "못 가요" offer is withdrawn, not accepted by 아빠');
+select is((select string_agg(template||':'||status,',' order by recipient_member_id,id) from public.notifications_outbox
+  where pickup_id=pg_temp.fixture(1052) and recipient_member_id in (pg_temp.fixture(1011),pg_temp.fixture(1013))),
+  'offer_to_all:skipped,pickup_accepted:pending,offer_to_all:skipped,pickup_accepted:pending',
+  'the other drivers lose the request card and learn that 아빠 has the trip');
+
+-- A family-wide offer the default assignee did not send is still a legitimate acceptance (4.4 #5), and an open request
+-- offer is accepted by whoever takes the trip (4.3 #3).
+insert into public.pickup_offers(family_id,pickup_id,origin,expires_at)
+  values(pg_temp.fixture(1010),pg_temp.fixture(1058),'routine',now()+interval '10 minutes');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+select is(public.accept_pickup(pg_temp.fixture(1058))->>'ok','true','the default assignee confirms with a family-wide offer pending');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001003';
+insert into saved values ('aunt_request',public.member_create_request(p_place_id=>pg_temp.fixture(1031)));
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001002';
+select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{data,pickup,status}','assigned','아빠 accepts 이모''s request')
+  from saved where name='aunt_request';
+reset role;
+select is((select string_agg(o.pickup_id::text||':'||o.status||':'||o.resolved_by_member_id,',' order by o.pickup_id::text) from public.pickup_offers o
+  where o.pickup_id in (pg_temp.fixture(1058),(select (value#>>'{data,pickup,id}')::uuid from saved where name='aunt_request'))),
+  (select string_agg(x,',' order by x) from unnest(array[pg_temp.fixture(1058)||':accepted:'||pg_temp.fixture(1011),
+    (select value#>>'{data,pickup,id}' from saved where name='aunt_request')||':accepted:'||pg_temp.fixture(1012)]) x),
+  'offers addressed to the acceptor are accepted by the acceptor');
+
+-- Archiving a rider (8.3 archive_child) is the archiving guardian's cancellation of every unfinished trip. Whoever
+-- had accepted or departed is told (16.1 보호자 취소), urgently when already driving.
+insert into public.pickups(id,family_id,rider_id,source,status,assignee_member_id,vehicle_id,location_source,location_confirmed,
+  dest_lat,dest_lng,dest_label,wanted_at,accepted_at,en_route_at,nav_session_id,nav_destination_revision,nav_status,last_start_action_id,assignment_round)
+values(pg_temp.fixture(1053),pg_temp.fixture(1010),pg_temp.fixture(1022),'request','en_route',pg_temp.fixture(1012),pg_temp.fixture(1041),'map_pin',true,
+  37.56,127.11,'학원 후문',now(),now()-interval '5 minutes',now()-interval '2 minutes',pg_temp.fixture(1061),1,'requested',pg_temp.fixture(1062),1);
+update public.vehicles set active_pickup_id=pg_temp.fixture(1053),active_nav_session_id=pg_temp.fixture(1061),active_destination_revision=1
+  where id=pg_temp.fixture(1041);
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+select is(public.archive_rider(pg_temp.fixture(1022))->>'ok','true','엄마 archives 민준 while 아빠 is driving to him');
+reset role;
+select is((select string_agg(status::text||':'||cancelled_by_kind||':'||is_customized,',' order by id) from public.pickups
+  where id in (pg_temp.fixture(1053),pg_temp.fixture(1054))),'cancelled:guardian:true,cancelled:guardian:true',
+  'the rider''s live trips close as the guardian''s cancellation');
+select is((select string_agg(e.actor_kind||':'||e.actor_id||':'||(e.payload->>'cause'),',' order by e.pickup_id) from public.pickup_events e
+  where e.pickup_id in (pg_temp.fixture(1053),pg_temp.fixture(1054)) and e.event_type='cancelled'),
+  'guardian:'||pg_temp.fixture(1011)||':rider_archived,guardian:'||pg_temp.fixture(1011)||':rider_archived',
+  'each cancelled trip records a cancelled event by the archiving guardian');
+select is((select template||':'||status from public.notifications_outbox where pickup_id=pg_temp.fixture(1053)
+  and recipient_member_id=pg_temp.fixture(1012) and expected_status='cancelled'),'pickup_cancelled_urgent:pending',
+  'the driver already on the way gets the urgent cancellation notice');
+select is((select template||':'||status from public.notifications_outbox where pickup_id=pg_temp.fixture(1054)
+  and recipient_member_id=pg_temp.fixture(1013) and expected_status='cancelled'),'pickup_cancelled:pending',
+  'the guardian who accepted the occurrence is told it is cancelled');
+select ok((select active_pickup_id is null and active_nav_session_id is null from public.vehicles where id=pg_temp.fixture(1041)),
+  'the car''s guidance for the cancelled trip ends');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select ok(jsonb_path_exists(public.vehicle_get_feed(),'$.data.cards[*] ? (@.kind == "cancelled_urgent" && @.pickup_id == $id)',
+  jsonb_build_object('id',pg_temp.fixture(1053))),'the assigned car shows the urgent cancellation card');
+reset role;
+
+-- Archiving a routine (F-14 시스템: 루틴 보관) cancels its unconfirmed future occurrences as a recorded system transition.
+-- An explicitly accepted occurrence is kept (F-10).
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+select is(public.archive_routine(pg_temp.fixture(1073))->>'ok','true','엄마 archives 지우''s routine');
+reset role;
+select is((select string_agg(status::text||':'||coalesce(cancel_reason,'-')||':'||coalesce(cancelled_by_kind,'-'),',' order by id) from public.pickups
+  where id in (pg_temp.fixture(1055),pg_temp.fixture(1056))),'cancelled:routine_archived:system,assigned:-:-',
+  'the default occurrence closes as a system cancellation and the accepted one is kept');
+select is((select e.actor_kind||':'||(e.payload->>'cause') from public.pickup_events e where e.pickup_id=pg_temp.fixture(1055) and e.event_type='cancelled'),
+  'system:routine_archived','the routine cancellation is recorded as an event');
+select is((select template||':'||status from public.notifications_outbox where pickup_id=pg_temp.fixture(1055)
+  and recipient_member_id=pg_temp.fixture(1013) and expected_status='cancelled'),'pickup_cancelled:pending',
+  'the default assignee is told the occurrence is off');
+
+-- Pausing a routine with "cancel future" (upsert_routine) cancels even accepted occurrences, so it notifies like a skip.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+select is(public.upsert_routine(pg_temp.fixture(1021),null,pg_temp.fixture(1031),127,'08:00',20,pg_temp.fixture(1012),
+  p_routine_id=>pg_temp.fixture(1074),p_active=>false,p_cancel_future=>true)->>'ok','true','엄마 pauses the routine and cancels its future trips');
+reset role;
+select is((select status::text||':'||cancel_reason||':'||cancelled_by_kind from public.pickups where id=pg_temp.fixture(1057)),
+  'cancelled:skipped:guardian','아빠''s accepted occurrence is skipped by 엄마');
+select is((select e.actor_kind||':'||e.actor_id||':'||(e.payload->>'cause') from public.pickup_events e
+  where e.pickup_id=pg_temp.fixture(1057) and e.event_type='cancelled'),'guardian:'||pg_temp.fixture(1011)||':routine_paused',
+  'the skipped occurrence records who cancelled it');
+select is((select template||':'||status from public.notifications_outbox where pickup_id=pg_temp.fixture(1057)
+  and recipient_member_id=pg_temp.fixture(1012) and expected_status='cancelled'),'pickup_cancelled:pending',
+  'the guardian who accepted it is told');
+
 select * from finish();
 rollback;

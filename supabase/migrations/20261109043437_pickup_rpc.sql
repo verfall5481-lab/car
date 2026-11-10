@@ -394,7 +394,10 @@ begin
         vehicle_id = coalesce(selected_vehicle_id, pickup.vehicle_id),
         is_customized = pickup.is_customized or pickup.source = 'routine'
         where id = pickup.id returning * into pickup;
-      perform deriro_private.resolve_offer(offer.id, 'accepted', actor.member_id);
+      -- Only a target accepts an offer (4.4 #5). The default assignee confirming a trip they had offered away
+      -- (handoff or vehicle "못 가요") withdraws that offer instead (4.4 #9, F-11).
+      perform deriro_private.resolve_offer(offer.id, case when is_offer_target then 'accepted'::public.offer_status
+        else 'cancelled'::public.offer_status end, actor.member_id);
       event_type := 'accepted';
 
     when 'offer' then

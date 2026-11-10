@@ -43,6 +43,15 @@ select is(public.claim_rider_invite(value#>>'{data,code}')->>'ok','true','accoun
 insert into step values ('rider_request',public.rider_create_request(p_gps=>'{"lat":37.5,"lng":127}'));
 select is(public.cancel_pickup((value#>>'{data,pickup,id}')::uuid,(value#>>'{data,pickup,version}')::int)#>>'{data,pickup,cancel_reason}',
   'child_cancelled','pickup_rpc: a rider cancellation stores its reason') from step where name='rider_request';
+insert into step values ('second_request',public.rider_create_request(p_gps=>'{"lat":37.5,"lng":127}'));
+
+set local request.jwt.claim.sub='50000000-0000-4000-8000-000000000001';
+select is(public.archive_rider((value#>>'{data,rider,id}')::uuid)->>'ok','true','account_linking: archive a rider with a live request')
+  from step where name='rider';
+reset role;
+select is((select e.actor_kind||':'||(e.payload->>'cause') from public.pickup_events e join step s on s.name='second_request'
+  and e.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where e.event_type='cancelled'),'guardian:rider_archived',
+  'account_linking: archiving records the guardian''s cancellation');
 
 reset role;
 select * from finish();

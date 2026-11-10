@@ -20,6 +20,18 @@ select is(public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.valu
   from step r,step p where r.name='rider' and p.name='home';
 select is(public.get_today(2)->>'ok','true','operations: read today');
 select is(public.get_family_overview()->>'ok','true','operations: read the family overview');
+insert into step select 'paused',public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.value#>>'{data,place,id}')::uuid,127,'18:30',
+  p_start_date=>(now() at time zone 'Asia/Seoul')::date+1) from step r,step p where r.name='rider' and p.name='home';
+select is(public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.value#>>'{data,place,id}')::uuid,127,'18:30',
+  p_start_date=>(now() at time zone 'Asia/Seoul')::date+1,p_routine_id=>(s.value#>>'{data,routine,id}')::uuid,p_active=>false,
+  p_cancel_future=>true)->>'ok','true','operations: pause a routine and cancel its occurrences')
+  from step r,step p,step s where r.name='rider' and p.name='home' and s.name='paused';
+select is(public.archive_routine((select r.id from public.routines r where r.time_local='17:30'))->>'ok','true',
+  'operations: archive a routine and cancel its occurrences');
+reset role;
+select is((select string_agg(e.actor_kind||':'||(e.payload->>'cause'),',' order by e.actor_kind) from public.pickup_events e
+  where e.event_type='cancelled'),'guardian:routine_paused,system:routine_archived','operations: both cancellations are recorded');
+set local role authenticated;
 
 set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000003';
 insert into step values ('pair',public.vehicle_pair_start());

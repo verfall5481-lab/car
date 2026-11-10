@@ -144,6 +144,7 @@ declare
   prior_rider public.riders;
   device public.rider_devices;
   vehicle public.vehicles;
+  live_pickup public.pickups;
   code_row deriro_private.link_codes;
   id_arg uuid := (p_data->>'id')::uuid;
   target_id uuid := (p_data->>'driver')::uuid;
@@ -414,8 +415,16 @@ begin
           and pickup_id in (select id from public.pickups where rider_id = rider.id and status in ('open','assigned','en_route','arrived'));
         update public.vehicles set active_pickup_id = null, active_nav_session_id = null, active_destination_revision = null
           where active_pickup_id in (select id from public.pickups where rider_id = rider.id);
-        update public.pickups set status = 'cancelled',cancel_reason = 'cancelled',cancelled_at = now()
-          where rider_id = rider.id and status in ('open','assigned','en_route','arrived');
+        -- Archiving is this guardian cancelling every unfinished trip of the rider (8.3 archive_child, F-14). The event
+        -- queues the cancellation notice (16.1 보호자 취소), urgent when a driver had already departed.
+        for live_pickup in select * from public.pickups p where p.rider_id = rider.id
+          and p.status in ('open','assigned','en_route','arrived') order by p.id
+        loop
+          update public.pickups set status = 'cancelled',cancel_reason = 'cancelled',cancelled_at = now(),
+            cancelled_by_kind = 'guardian',is_customized = true
+            where id = live_pickup.id returning * into live_pickup;
+          perform deriro_private.add_event(live_pickup, actor, 'cancelled', '{"cause":"rider_archived"}');
+        end loop;
         update public.routines set archived_at = now() where rider_id = rider.id and archived_at is null;
         update public.riders set archived_at = now(), phone_e164 = null where id = rider.id;
         update public.rider_devices set revoked_at = now() where rider_id = rider.id and revoked_at is null;

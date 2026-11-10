@@ -30,6 +30,8 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 
 `leave_family`와 `remove_member`는 떠나는 보호자가 요청자인 미종료 픽업을 `cancelled`(`cancelled_by_kind=system`)로 닫는다. 그래서 에스컬레이션과 문자가 멈추고, 이미 수락한 사람에게 취소 알림이 간다. 떠나는 보호자가 담당하던 픽업은 owner에게 넘기고, owner가 운전할 수 없으면 다른 운전 가능 보호자에게 넘긴다. 후임은 아직 출발하지 않았으므로 `en_route`·`arrived` 픽업도 `assigned`로 돌아가고 출발·도착 시각과 내비 세션이 지워진다. 이벤트는 `member_reassigned`(이전 상태 포함)이며 새 담당자와 rider에게 알림이 간다. 넘길 사람이 없으면 픽업을 취소한다.
 
+`archive_rider`는 rider의 기기를 모두 해지하고 루틴을 보관한다. 그 rider의 미종료 픽업(`open`, `assigned`, `en_route`, `arrived`)은 보관한 보호자의 취소로 닫힌다(`cancelled_by_kind=guardian`, 이벤트 `cancelled`, `payload.cause=rider_archived`). 그래서 담당자와 가족에게 취소 알림이 간다. 이미 출발한 픽업이면 긴급 알림(`pickup_cancelled_urgent`)이 가고 배정 차량에는 긴급 카드가 뜬다.
+
 하나의 인증 사용자는 보호자, rider 기기, 차량 중 하나다(2.1). 익명 세션이 영구 계정으로 바뀌어도 활성 rider 기기나 차량 연결이 남아 있으면 `create_family`·`join_family`는 `ALREADY_IN_FAMILY`를 돌려준다. 페어링 코드를 받은 세션이 더 이상 익명이 아니면 `vehicle_pair_confirm`은 `PAIR_CODE_INVALID`다.
 
 `set_member_roles`로 `can_drive`를 끈 보호자는 이미 맡은 픽업을 넘길 때까지 그대로 담당하지만 출발할 수 없다. `mark_en_route`는 `FORBIDDEN`이고, `offer_pickup`으로 넘기거나 다른 보호자가 `take_over`할 수 있다. 루틴이 바뀌어 회차를 다시 계산할 때도 운전할 수 없는 기본 담당자에게는 배정하지 않는다(`ensure_occurrences`와 같은 규칙).
@@ -57,6 +59,8 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 
 `get_today`는 읽기만 한다. 루틴 회차는 루틴 저장, `ensure_occurrences`, 매시 5분 스케줄러(오늘부터 2일치)가 만든다.
 
+`upsert_routine`에 `active=false`, `cancel_future=true`를 넘기면 앞으로의 `open`·`assigned` 회차를 이미 수락된 회차까지 `skipped`로 취소한다. 회차마다 호출한 보호자의 `cancelled` 이벤트(`cause=routine_paused`)가 남고 취소 알림이 간다. `archive_routine`과 회차를 없애는 루틴 수정은 개별 변경 없는 미래 회차만 시스템 취소로 닫는다(`cancel_reason=routine_archived`, `cancelled_by_kind=system`, 이벤트 `cause`는 `routine_archived` 또는 `routine_changed`). 이때도 기본 담당자와 가족에게 같은 취소 알림이 간다. 수락, 넘기기 제안, 위치 확인 등으로 개별 변경된 회차는 그대로 남는다.
+
 차량·픽업의 `range.verdict`는 `low`, `sufficient`, `check_required` 중 하나다. `sufficient`는 모든 픽업의 필요 거리를 계산할 수 있고 주행가능거리 값이 6시간 이내일 때만 나온다. 24시간 이내 값으로 부족하면 `low`다. 출발점이 없거나, 값이 없거나, 오래됐는데 부족하지 않으면 `check_required`다. 경고는 24시간 이내 값으로 만들거나 갱신하고, 6시간 이내 값으로 충분할 때 또는 24시간 창에 배정이 없을 때만 닫는다.
 
 저장 장소의 `kind`는 `home`, `school`, `academy`, `other`다. `weekdays`는 월요일을 비트 0으로 하는 7비트 마스크다. 차량 기어는 `P`, `R`, `N`, `D`, `unknown`을 받는다. 차량 상태의 시각은 수집 시각이다. 피드에서 `is_stale`과 `is_demo_value`를 확인할 수 있다.
@@ -64,6 +68,7 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 ## 픽업과 푸시
 
 - `member_create_request`, `rider_create_request`는 `wanted_in_min`(0, 10, 20, 30)과 `place_id`, `pickup_point_id`, `pin`, `gps` 중 하나를 받는다. `pin` 객체는 `lat`, `lng`, `note?`, `current_location?`을 받는다. `gps` 객체는 `lat`, `lng`, `accuracy_m?`을 받는다.
+- `accept_pickup`은 대기 제안을 그 제안의 대상이 수락할 때만 `accepted`로 닫는다. 기본 담당으로 배정된 회차를 담당자가 처음 수락할 때 자신이 보낸 넘기기 제안(차량의 "못 가요" 포함)이 대기 중이면 그 제안은 `cancelled`로 거둬지고 `resolved_by_member_id`는 수락한 사람이다. 받는 사람의 부탁 알림은 건너뛰고, 다른 보호자에게는 일반 수락 정보 알림(`pickup_accepted`)만 간다.
 - `accept_pickup`은 `pickup_id`, `vehicle_id?`를 받는다. `offer_pickup`, `respond_offer`, `cancel_offer`, `take_over`, `mark_en_route`, `mark_completed`, `cancel_pickup`, `confirm_location`, `skip_occurrence`, `undo_en_route`, `rider_ready_early`, `rider_report_not_met`, `vehicle_decline`에는 `expected_version`이 필요하다.
 - `vehicle_start_now`는 `pickup_id`, `expected_version`, `action_id`, `offer_id?`를 받고 `pickup`, `dest`, `nav_session_id`, `destination_revision`을 돌려준다. `mark_arrived`의 `source=manual`은 `expected_version`, `source=nav_callback`은 `nav_session_id`와 `destination_revision`을 사용한다. `report_nav_result`는 `pickup_id`, `nav_session_id`, `result`, `error_code?`를 받는다.
 - 보호자 취소 사유에는 `resolved_by_phone`, `mistake`, `other_way_home`, `other`를 사용한다. 도착한 픽업은 `not_met`으로 취소할 수 있다. 루틴 건너뛰기는 `skipped`로 기록된다.

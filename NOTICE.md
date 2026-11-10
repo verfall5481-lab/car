@@ -29,7 +29,7 @@
 | [PGlite 0.3.15](https://github.com/electric-sql/pglite/blob/main/LICENSE) | Apache-2.0 · ElectricSQL 및 기여자 | 로컬 PostgreSQL SQL 통합 테스트, 원본 패키지 |
 | [web-push 3.6.7](https://github.com/web-push-libs/web-push/blob/master/LICENSE) | MPL-2.0 · Web Push Libraries 기여자 | Edge Function의 VAPID 발송, 원본 패키지 |
 
-## Android 차량 데모
+## Android 차량 앱
 
 | 이름 및 버전 | 라이선스 및 저작권 | 사용 |
 | --- | --- | --- |
@@ -38,5 +38,7 @@
 | [Android Gradle Plugin 8.8.2](https://android.googlesource.com/platform/tools/base/), [Gradle Wrapper 8.10.2](https://github.com/gradle/gradle/blob/v8.10.2/LICENSE) | Apache-2.0 · Android Open Source Project, Gradle Inc. 및 기여자 | Android 빌드, 원본 도구 |
 | [ZXing Core 3.5.3](https://github.com/zxing/zxing/blob/zxing-3.5.3/LICENSE) | Apache-2.0 · ZXing authors | 데모 QR 생성, 원본 패키지 |
 | [JUnit 4.13.2](https://github.com/junit-team/junit4/blob/r4.13.2/LICENSE-junit.txt) | EPL-1.0 · JUnit contributors | Android 단위 테스트, 원본 패키지 |
+| [MockWebServer 4.12.0](https://github.com/square/okhttp/blob/parent-4.12.0/LICENSE.txt) | Apache-2.0 · Square, Inc. | `pleos` 단위 테스트의 로컬 HTTP 서버, 원본 패키지 |
+| [JSON-java 20250107](https://github.com/stleary/JSON-java/blob/20250107/LICENSE) | Public Domain | `pleos` 단위 테스트의 JVM JSON 파서, 원본 패키지 |
 
-Pleos SDK와 튜토리얼 코드는 현재 차량 데모에 포함되어 있지 않습니다. 차량 연동 확인 상태는 [차량 검증 기록](docs/vehicle-verification.md)에 따로 기록합니다.
+`demo` 빌드에는 Pleos SDK가 들어 있지 않습니다. `pleos` 빌드는 Pleos Connect SDK의 Vehicle 2.3.2와 NaviHelper 3.0.5를 [Pleos Playground 저장소](https://nexus-playground.pleos.ai/repository/maven-releases/)에서 빌드할 때 내려받아 연결합니다. 두 SDK의 바이너리와 소스는 이 저장소에 포함하지 않습니다. SDK 아티팩트에서 공개 라이선스 문서를 확인하지 못했으므로 사용·배포 조건은 Pleos 개발자 약관 확인이 필요합니다. Pleos 공식 샘플과 튜토리얼 코드는 사용하지 않았습니다(재사용 라이선스 미확인, VR-12). 차량 연동 확인 상태는 [차량 검증 기록](docs/vehicle-verification.md)에 따로 기록합니다.

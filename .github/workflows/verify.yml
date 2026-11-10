@@ -74,3 +74,29 @@ jobs:
         env:
           DERIRO_TEST_PGPORT: "55432"
           DERIRO_TEST_PGUSER: deriro_test
+
+  vehicle-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # The runner image ships JDK 17 and the Android SDK. Dependency versions come from apps/car/app/gradle.lockfile.
+      - name: Build, unit-test and lint both flavors
+        working-directory: apps/car
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          bash ./gradlew --no-daemon \
+            :app:assembleDemoDebug :app:testDemoDebugUnitTest :app:lintDemoDebug \
+            :app:assemblePleosDebug :app:testPleosDebugUnitTest :app:lintPleosDebug
+      - name: Summarize unit test results
+        if: always()
+        working-directory: apps/car
+        run: |
+          for dir in app/build/test-results/*/; do
+            [ -d "$dir" ] || continue
+            tests=$(cat "$dir"*.xml | grep -o '<testcase ' | wc -l)
+            failed=$(cat "$dir"*.xml | grep -c -E '<(failure|error)[ >]' || true)
+            echo "$(basename "$dir"): $tests tests, $failed failed"
+          done

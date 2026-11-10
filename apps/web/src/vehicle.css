@@ -307,3 +307,117 @@
   .vehicle-option .actions { flex-wrap: nowrap; }
   .vehicle-option .actions .button { flex-basis: auto; }
 }
+
+/* Live web vehicle simulator (SPEC 23.8): inputs a real car would produce, kept outside the car screen. */
+.vehicle-sim {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 16px 18px;
+  border: 1px solid #d8dade;
+  border-radius: 16px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.vehicle-sim-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vehicle-sim-header h2 {
+  margin: 0 6px 0 0;
+  font-size: 1.05rem;
+  font-weight: 760;
+}
+
+.vehicle-sim-badge {
+  border: 1px solid #e3c27d;
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: var(--amber-soft);
+  color: #573b03;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.vehicle-sim-badge--demo {
+  border-color: #d8dade;
+  background: var(--neutral);
+  color: var(--muted);
+}
+
+.vehicle-sim-notice {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.vehicle-sim-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.vehicle-sim-group {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 0.86rem;
+}
+
+.vehicle-sim-group h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 720;
+}
+
+.vehicle-sim-group h3 output {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.vehicle-sim-group p,
+.vehicle-sim-group small {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.vehicle-sim-group input[type='range'] {
+  width: 100%;
+  accent-color: var(--amber);
+}
+
+.vehicle-sim-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vehicle-sim-row .button,
+.vehicle-sim-links .button {
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 0.84rem;
+}
+
+.vehicle-sim-links {
+  align-content: center;
+}
+
+.vehicle-sim .button--amber {
+  color: #211a0f;
+}

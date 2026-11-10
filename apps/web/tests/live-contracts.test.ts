@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createRequestParams, decodeRpc, pickupActionRpc, readLiveConfig, sameRoleReturn } from '../src/live/api.ts';
-import { guardianState, overviewSchema, pickupSchema, riderState, riderStateSchema, todaySchema } from '../src/live/models.ts';
+import { guardianState, mapOffer, offerRow, overviewSchema, pickupSchema, riderState, riderStateSchema, todaySchema } from '../src/live/models.ts';
 import { demoNow, nameOf, rangeEstimate } from '../src/demo-domain.ts';
 
 function fixture(name: string) {
@@ -48,6 +48,13 @@ test('rider projection accepts privacy-filtered SQL without assuming a known ran
   assert.equal(state.pickupCapabilities?.[pickup.id].cancel, true);
   assert.equal(demoNow(state, 110_000), Date.parse(linked.server_time) + 10_000);
   assert.equal(rangeEstimate(state, [pickup], { ...state.vehicle, range: 600 }).verdict, 'check');
+});
+
+test('only an accepted offer names its resolver as the acceptor', () => {
+  const resolver = '10000000-0000-4000-8000-000000000009';
+  const row = (status: string) => offerRow.parse({ id: `offer-${status}`, status, from_member_id: null, to_member_id: null, expires_at: '2026-11-09T06:00:00Z', resolved_by_member_id: resolver });
+  assert.equal(mapOffer(row('accepted')).acceptedBy, resolver);
+  for (const status of ['declined', 'cancelled', 'expired', 'superseded', 'pending']) assert.equal(mapOffer(row(status)).acceptedBy, undefined, status);
 });
 
 test('map pin carries optional current location with exact SQL keys', () => {

@@ -1,7 +1,7 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { Smartphone, Users } from 'lucide-react';
+import { CarFront, Smartphone, Users } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 import { copy } from '../copy.ts';
 import { Button, GuardianTabs, MobileHeader, Row } from '../ui.tsx';
@@ -126,13 +126,27 @@ function SurfacePage({ surface }: { surface: Surface }) {
   </main>;
 }
 
+const LiveVehicle = lazy(() => import('./vehicle.tsx'));
+const liveVehicleEnabled = import.meta.env.VITE_LIVE_VEHICLE_SIM === 'true';
+
 export default function LiveApp() {
   const location = useLocation();
   const config = readLiveConfig(import.meta.env);
-  const surface = /^\/c(?:\/|$)/.test(location.pathname) ? 'rider' : 'guardian';
+  const vehicle = liveVehicleEnabled && /^\/v(?:\/|$)/.test(location.pathname);
+  const surface: Surface = vehicle ? 'vehicle' : /^\/c(?:\/|$)/.test(location.pathname) ? 'rider' : 'guardian';
   if (location.pathname === '/') return <main className="mobile-app live-app"><MobileHeader title={copy.app} /><div className="mobile-content stack">
     <Row icon={<Users />} title={copy.roles.guardian} to="/p/" /><Row icon={<Smartphone />} title={copy.roles.rider} to="/c/" />
+    {liveVehicleEnabled && <a className="row" href="/v/"><span className="row-icon"><CarFront /></span><span className="row-title">{copy.simHeading}</span></a>}
   </div></main>;
   if (!config) return <main className="mobile-app live-app"><MobileHeader title={copy.app} /><div className="mobile-content"><p role="alert">{copy.configUnavailable}</p></div></main>;
+  if (surface === 'vehicle') {
+    return (
+      <RoleProvider key={surface} surface={surface} config={config}>
+        <Suspense fallback={<p className="boot-message">{copy.loading}</p>}>
+          <LiveVehicle />
+        </Suspense>
+      </RoleProvider>
+    );
+  }
   return <RoleProvider key={surface} surface={surface} config={config}><SurfacePage surface={surface} /></RoleProvider>;
 }

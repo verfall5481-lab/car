@@ -423,9 +423,9 @@ function VehicleSimulator({ sim, change, upload, trip, pairHref, busy, reportNav
   const headingId = useId();
   const sessionId = trip?.nav_session_id;
   const guiding = trip?.status === 'en_route' && sessionId != null && trip.destination_revision != null;
-  let uploadText = copy.simUploadNone;
+  let uploadText: string = copy.simUploadNone;
   if (upload) uploadText = upload.ok ? copy.simUploadValue(upload.parked ? 'P' : 'D', upload.rangeKm, clockSeconds(upload.at)) : copy.simUploadFailed;
-  let navText = copy.simNavIdle;
+  let navText: string = copy.simNavIdle;
   if (guiding && trip.nav_status === 'requested') navText = copy.simNavWaiting;
   else if (guiding && trip.nav_status === 'ok') navText = copy.simNavRecordedOk;
   else if (guiding && trip.nav_status === 'failed') navText = copy.simNavRecordedFailed;

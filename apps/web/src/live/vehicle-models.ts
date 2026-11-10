@@ -39,7 +39,7 @@ const feedCard = pickupRow.extend({
 const activeTrip = pickupRow.extend({
   pickup_id: z.string(),
   nav_session_id: nullableId,
-  destination_revision: z.number().int().nullish(),
+  destination_revision: z.number().int().nullish().transform((value) => value ?? undefined),
   nav_status: z.string().nullish(),
 });
 export const vehicleStateRowSchema = z.object({

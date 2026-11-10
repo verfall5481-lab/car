@@ -8,6 +8,6 @@ export default defineConfig({
   webServer: [
     { command: 'pnpm dev --port 5174 --strictPort', url: 'http://127.0.0.1:5174/p/', reuseExistingServer: false },
     { command: 'pnpm dev --port 5176 --strictPort', url: 'http://127.0.0.1:5176/p/', reuseExistingServer: false,
-      env: { VITE_APP_MODE: 'live', VITE_SUPABASE_URL: 'http://127.0.0.1:56789', VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_browser_test', VITE_ENABLE_KAKAO_LOGIN: 'true', VITE_TURNSTILE_SITE_KEY: 'test-turnstile-site-key' } },
+      env: { VITE_APP_MODE: 'live', VITE_SUPABASE_URL: 'http://127.0.0.1:56789', VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_browser_test', VITE_ENABLE_KAKAO_LOGIN: 'true', VITE_TURNSTILE_SITE_KEY: 'test-turnstile-site-key', VITE_LIVE_VEHICLE_SIM: 'true' } },
   ],
 });

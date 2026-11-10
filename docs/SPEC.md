@@ -1,6 +1,6 @@
 # 데리러(가칭) — Pleos 가족 픽업 앱 구현 명세서
 
-- 버전: 0.4 (가족 픽업으로 확장: 구성원 누구나 호출, 정확한 타는 곳. 23장)
+- 버전: 0.4.1 (가족 픽업으로 확장: 구성원 누구나 호출, 정확한 타는 곳. 23장. 0.4.1은 정합성 보완, 0.8)
 - 작성일: 2026-11-03
 - 대상 독자: Claude Code(구현 에이전트), 팀원, 기획서 작성자
 - 상태: 구현 기준. 핵심 RPC·스케줄러·PWA 연결 계약 보완 완료. DB 실행과 Pleos·iPhone 실기기 검증은 아직 안 함(19장)
@@ -172,6 +172,18 @@ v0.3 검토(기능 설명·예제 SQL·RPC·화면·테스트 대조)에서 나�
 | 부르는 사람 일반화 | `children` → `riders`(아이, 운전하지 않는 성인). 동의 근거를 나이별로 분리 | P0 |
 | 지도에서 타는 곳 고르기 | 요청 화면에 "지도에서" 선택지. 핀 이동과 메모, 그 좌표가 그대로 내비 목적지 | P0 |
 | 저장된 타는 곳 | 장소마다 정문·후문 같은 타는 곳 여러 개 저장 | P1 |
+
+### 0.8 v0.4.1 변경 요약
+
+구현 검토에서 나온 정합성 문제를 고쳤다. 정책은 바꾸지 않았고, 명세가 말하지 않던 경우를 채웠다.
+
+| 항목 | v0.4의 문제 | v0.4.1 | 위치 |
+|---|---|---|---|
+| 보낸 사람의 수락 | 기본 담당자가 부탁을 보낸 뒤 자기 회차를 수락하면 제안이 어떻게 되는지 없었다 | 제안은 `cancelled`(거둔 것). `accepted`는 대상자가 수락할 때만 | 4.4 |
+| 만료 시 제안 | 4.3은 `expired`, 4.4는 `cancelled`로 달랐다 | 픽업 만료는 `expired`, 취소·완료는 `cancelled` | 4.4 |
+| 루틴 재계산 | 개별 변경 없는 회차의 담당 변경에 이벤트·제안 처리가 없었다 | 대기 제안 `cancelled`, 이벤트 `routine_reassigned`, 알림 없음 | 4.1, 4.4 |
+| 이벤트 없는 취소 | 구성원 보관, 루틴 중지·보관·수정으로 닫히는 픽업의 주체·알림이 없었다 | 보호자 또는 시스템 취소로 이벤트를 남기고 16.1대로 알린다 | 8.3, 16.1, 16.2 |
+| 연결 모드 차량 시뮬레이터 | 차량 기기 없이는 실제 백엔드의 차량 경로를 확인할 수 없었다 | 플래그로 켜는 웹 차량 시뮬레이터 | 23.8 |
 
 ---
 
@@ -906,7 +918,7 @@ v0.3 검토(기능 설명·예제 SQL·RPC·화면·테스트 대조)에서 나�
    └─────────┘                                        └───────────┘ ◀── open / assigned 에서도 cancel
 ```
 
-`assigned → open` 전이는 없다. 담당자가 못 가게 되면 담당은 그대로 두고 제안을 만든다. 이것이 "수락 전 책임 유지" 규칙의 구현이다.
+`assigned → open` 전이는 없다. 담당자가 못 가게 되면 담당은 그대로 두고 제안을 만든다. 이것이 "수락 전 책임 유지" 규칙의 구현이다. 예외는 하나다. 아무도 수락·인계하지 않은(개별 변경 없는) 미래 루틴 회차는 루틴 수정에 따라 기본 담당이 다시 계산되며, 이때 담당이 바뀌면 이벤트 `routine_reassigned`를 남긴다(4.4 12번).
 
 ### 4.2 제안 상태
 
@@ -960,7 +972,9 @@ v0.3 검토(기능 설명·예제 SQL·RPC·화면·테스트 대조)에서 나�
 | 7 | `pending` | 전체 대상 중 한 명 거절 | `pending` | | `offer_responses` 기록. 대상자 전원 거절이면 `declined` |
 | 8 | `pending` | 만료 | `expired` | | 보낸 사람(없으면 보호자 전원) 알림 |
 | 9 | `pending` | 보낸 사람이 거둠 | `cancelled` | | |
-| 10 | `pending` | 픽업 종료(취소·만료·완료) | `cancelled` | | |
+| 10 | `pending` | 픽업 종료(취소·완료) | `cancelled` | | 픽업 만료는 `expired`(4.3 12번) |
+| 11 | `pending` | 보낸 사람이 자기 픽업을 수락·출발 | `cancelled` | 기본 담당자의 첫 수락 포함 | 거둔 것으로 본다. 대상자 카드 닫힘, 별도 알림 없음 |
+| 12 | `pending` | 루틴 수정으로 회차의 담당이 바뀜 | `cancelled` | 개별 변경 없는 회차 | 시스템이 거둔다. 이벤트 `routine_reassigned`, 알림 없음. 가족 전체 제안은 다시 만들지 않는다(A.4) |
 
 "모두에게" 제안의 대상자 = 가족 보호자 전원 − 보낸 사람.
 
@@ -2032,7 +2046,7 @@ create trigger pickups_touch before update on public.pickups
 |---|---|---|---|---|
 | `create_child` | 보호자 | `display_name, phone_e164?, consent_version` | `{child}` | `consents(child_location)` 함께 기록 |
 | `update_child` | 보호자 | `child_id, display_name?, phone_e164?` | `{child}` | |
-| `archive_child` | 보호자 | `child_id` | `{}` | 기기 전부 해지, 루틴 보관, 미래 회차 취소 |
+| `archive_child` | 보호자 | `child_id` | `{}` | 기기 전부 해지, 루틴 보관, 미래 회차 취소. 끝나지 않은 픽업은 보관한 보호자의 취소로 닫고 이벤트를 남긴다(16.1 보호자 취소, 출발 뒤면 긴급) |
 | `create_child_invite` | 보호자 | `child_id, channel('qr'|'sms')` | `{code, url, expires_at}` (code는 숫자 8자리, url은 `/c/start?code=`) | 이전 미사용 코드 무효화. 문자는 `send-child-invite`가 보호자 JWT 그대로 이 RPC를 호출해 권한 검사를 유지 |
 | `claim_child_invite` | 익명 사용자 | `code(숫자 8자리), user_agent, confirm_switch` | `{child, family_guardians}` 또는 `{needs_switch_confirm: {from, to}}` | 기기당 10분 5회 시도 제한. 다른 아이에 묶여 있으면 `confirm_switch=true`일 때만 이전 바인딩 해지 |
 | `revoke_child_device` | 보호자 | `device_id` | `{}` | |
@@ -4452,6 +4466,8 @@ interface PickupApi {
 | 완료 | 화면 | 정보 푸시(요청 픽업만) | - | - | - | - |
 | 아이 취소 | 화면 | 푸시 | 푸시(긴급, en_route면) | - | - | 배정 차 긴급 카드 |
 | 보호자 취소 | 화면 | 정보 푸시 | 푸시 | - | - | 배정 차 카드 |
+| 시스템 취소(루틴 보관·수정, 요청자 탈퇴) | 화면 | 정보 푸시 | 푸시 | - | - | 배정 차 카드 |
+| 제안 철회(부탁 취소, 보낸 사람의 수락·출발, 루틴 수정) | - | - | - | - | 푸시 없음 | 대상자 차 카드 닫힘 |
 | 만료 | 화면 | 푸시 | - | - | - | - |
 | 제안 생성 | - | - | - | - | 푸시 | 대상자 차 카드 |
 | 제안 거절 | - | - | - | 푸시(즉시) | - | 보낸 사람 차 카드 |
@@ -4484,6 +4500,7 @@ interface PickupApi {
 | `pickup_en_route` | {who}{가} 출발했어요 | {child}, {place} | `/p/pickups/{id}` |
 | `pickup_completed` | {child}{가} 탔어요 | {who} | `/p/pickups/{id}` |
 | `pickup_cancelled_by_child` | {child}{가} 요청을 취소했어요 | {place} | `/p/pickups/{id}` |
+| `pickup_cancelled` | {child} 픽업이 취소됐어요 | {place} | `/p/pickups/{id}` |
 | `pickup_cancelled_urgent` | {child} 픽업이 취소됐어요 | 출발하지 않아도 돼요 | `/p/pickups/{id}` |
 | `pickup_expired` | {child} 요청이 시간이 지나 닫혔어요 | 아무도 수락하지 않았어요. 아이에게 전화해 주세요 | `/p/pickups/{id}` |
 | `offer_to_you` | {from}{가} 부탁했어요 | {time} {child}, {place}{noteSuffix} | `/p/pickups/{id}` |

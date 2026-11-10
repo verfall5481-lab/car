@@ -1,23 +1,27 @@
-// Runs a scenario through `applyPickupAction` the way the browser demo composes it. The demo keeps some of that
-// composition outside packages/contracts, so this driver mirrors it and names the source of each piece:
-// - request and routine construction: `createRequest`, `routineOccurrence`, `makePickup` in apps/web/src/demo-domain.ts
-// - persisting a result, including rejected results that carry an expiry, and the car's active guidance:
-//   `applyDemoAction` in demo-domain.ts
-// - the scheduler sweep: `setDemoTime` in demo-domain.ts
-// - "못 가요": `cannotGo` and `answerOffer` in apps/web/src/vehicle.tsx
+// Runs a scenario through the TypeScript machine and the composition functions the browser demo calls
+// (apps/web/src/demo-domain.ts uses the same ones): `newRequestPickup` and `newOccurrencePickup` to create,
+// `applyPickupAction` for transitions, `declineFromVehicle` for "못 가요", `sweepPickup` for the scheduler,
+// `reviseOccurrence` for routine edits and `guidanceAfter` for the car's active guidance. A rejected result is stored
+// as well, because it can carry an expiry (4.5), exactly as the demo stores it.
 import {
   applyPickupAction,
   canRequestPickup,
-  isActivePickup,
+  declineFromVehicle,
+  guidanceAfter,
+  newOccurrencePickup,
+  newRequestPickup,
   resolveDestination,
+  reviseOccurrence,
+  sweepPickup,
 } from "../src/index.ts";
 import type {
   Actor,
-  Destination,
   LocationInput,
   Member,
+  OccurrencePlan,
   Pickup,
   PickupAction,
+  PickupContext,
   PickupPoint,
   PickupResult,
   Place,
@@ -25,19 +29,7 @@ import type {
   Vehicle,
 } from "../src/index.ts";
 import { expiresInMin, familyOf, isAct, minute, versionOf } from "./model.ts";
-import type {
-  ActStep,
-  ActionSpec,
-  LocationSpec,
-  Outcome,
-  PickupSpec,
-  RequestSpec,
-  RoutineSpec,
-  Run,
-  Scenario,
-  Shape,
-  Stamp,
-} from "./model.ts";
+import type { ActStep, ActionSpec, LocationSpec, Outcome, PickupSpec, RequestSpec, RoutineSpec, Run, Scenario, Stamp } from "./model.ts";
 
 /** 17:00 in Seoul. Only differences from this clock matter. */
 export const tsEpoch = Date.UTC(2026, 10, 9, 8);
@@ -45,10 +37,20 @@ const familyId = "family";
 
 type TsVehicle = Vehicle & { parked: boolean };
 type Session = { id: string; revision: number };
-type Applied = { ok: boolean; code: string | null; ignored: boolean; events: readonly string[] };
+/** The routine behind a routine pickup, as the guardian last saved it. */
+type RoutineDefinition = {
+  requester: Requester;
+  place: string;
+  assigneeId: string | null;
+  vehicleId: string | null;
+  notifyBeforeMin: number;
+  /** The routine's time on this occurrence's day. */
+  wantedAt: number;
+  dayDropped: boolean;
+};
 
-export function runTs(scenario: Scenario, shape: Shape): Run {
-  const world = new TsWorld(scenario, shape);
+export function runTs(scenario: Scenario): Run {
+  const world = new TsWorld(scenario);
   const created: Run["created"] = {};
   for (const spec of scenario.pickups) created[spec.key] = world.create(spec);
   const steps = scenario.steps.map((step) => {
@@ -69,15 +71,13 @@ class TsWorld {
   readonly points: PickupPoint[];
   readonly vehicles: TsVehicle[];
   readonly pickups = new Map<string, Pickup>();
-  private readonly shape: Shape;
-  private readonly notifyBefore = new Map<string, number>();
+  private readonly routines = new Map<string, RoutineDefinition>();
   private readonly actionIds = new Map<string, string>();
   private readonly sessions = new Map<string, Session[]>();
   private sequence = 0;
 
-  constructor(scenario: Scenario, shape: Shape) {
+  constructor(scenario: Scenario) {
     const family = familyOf(scenario);
-    this.shape = shape;
     this.members = family.members.map((member) => ({
       id: member.key, familyId, canDrive: member.canDrive ?? true, canRequest: member.canRequest ?? true,
     }));
@@ -100,13 +100,17 @@ class TsWorld {
     return vehicle;
   }
 
+  private context(): PickupContext {
+    return { now: this.now, members: this.members, vehicles: this.vehicles };
+  }
+
   create(spec: PickupSpec): Outcome {
     const pickup = spec.kind === "request" ? this.request(spec) : this.routine(spec);
     this.pickups.set(spec.key, pickup);
-    return this.outcome(pickup, pickup, { ok: true, code: null, ignored: false, events: [] });
+    return this.outcome(pickup, pickup, { ok: true, pickup, events: [] });
   }
 
-  /** `createRequest` + `makePickup`; the spec shape adds the request offer `create_request` inserts. */
+  /** As `createRequest` in the demo. */
   private request(spec: RequestSpec): Pickup {
     const requester: Requester = this.riders.some(({ id }) => id === spec.by)
       ? { kind: "rider", id: spec.by }
@@ -114,26 +118,28 @@ class TsWorld {
     if (!canRequestPickup(requester, familyId, this.members, this.riders)) throw new Error(`${spec.by} cannot request`);
     const destination = resolveDestination(familyId, this.location(spec.at), this.places, this.points);
     if (!destination) throw new Error(`invalid location for ${spec.key}`);
-    const wantedAt = this.now + (spec.wantedInMin ?? 0) * minute;
-    const pickup = makePickup(spec.key, requester, destination, wantedAt, "request");
-    if (this.shape === "demo") return pickup;
-    return {
-      ...pickup,
-      offer: {
-        id: `${spec.key}-request-offer`, status: "pending", fromMemberId: null, toMemberId: null,
-        expiresAt: wantedAt + 60 * minute, declinedBy: [],
-      },
-    };
+    return newRequestPickup({ id: spec.key, familyId, requester, destination, wantedAt: this.now + (spec.wantedInMin ?? 0) * minute });
   }
 
-  /** `routineOccurrence` + `makePickup`. */
+  /** As `routineOccurrence` in the demo. */
   private routine(spec: RoutineSpec): Pickup {
-    const destination = resolveDestination(familyId, { source: "saved_place", placeId: spec.place }, this.places);
-    if (!destination) throw new Error(`invalid place for ${spec.key}`);
-    const wantedAt = this.now + spec.wantedInMin * minute;
-    if (spec.notifyBeforeMin !== undefined) this.notifyBefore.set(spec.key, spec.notifyBeforeMin);
-    return makePickup(spec.key, { kind: "rider", id: spec.rider }, destination, wantedAt, "routine",
-      spec.assignee ?? null, spec.vehicle ?? null);
+    const definition: RoutineDefinition = {
+      requester: { kind: "rider", id: spec.rider }, place: spec.place, assigneeId: spec.assignee ?? null,
+      vehicleId: spec.vehicle ?? null, notifyBeforeMin: spec.notifyBeforeMin ?? 20,
+      wantedAt: this.now + spec.wantedInMin * minute, dayDropped: false,
+    };
+    this.routines.set(spec.key, definition);
+    return newOccurrencePickup({
+      id: spec.key, familyId, requester: definition.requester, destination: this.placeDestination(spec.place),
+      wantedAt: definition.wantedAt, assigneeId: definition.assigneeId, vehicleId: definition.vehicleId,
+      notifyBeforeMin: definition.notifyBeforeMin,
+    }, this.context());
+  }
+
+  private placeDestination(place: string) {
+    const destination = resolveDestination(familyId, { source: "saved_place", placeId: place }, this.places);
+    if (!destination) throw new Error(`unknown place ${place}`);
+    return destination;
   }
 
   private location(spec: LocationSpec): LocationInput {
@@ -156,27 +162,48 @@ class TsWorld {
     const before = this.pickups.get(key);
     if (!before) throw new Error(`unknown pickup ${key}`);
     const actor = this.actor(step.actor);
-    const applied = this.dispatch(key, before, actor, step.do);
-    return this.outcome(before, this.pickups.get(key)!, applied);
+    const result = this.dispatch(key, before, actor, step.do);
+    this.record(key, actor, step.do.type, result);
+    return this.outcome(before, this.pickups.get(key)!, result);
   }
 
-  private dispatch(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec): Applied {
+  private dispatch(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec): PickupResult {
+    const expectedVersion = versionOf(pickup.version, "version" in spec ? spec.version : undefined);
     switch (spec.type) {
       case "sweep":
-        return this.sweep(key, pickup);
+        return sweepPickup(pickup, this.context());
       case "vehicle_decline":
-        return this.cannotGo(key, pickup, actor);
+        return declineFromVehicle(pickup, actor, { expectedVersion, offerId: this.id("offer") }, this.context());
       case "nav_result":
-        // There is no navigation result action in TS. The demo decides navigation failure up front
-        // (`DemoVehicle.navFails` -> `navError` in applyDemoAction); the pickup does not change.
-        return { ok: true, code: null, ignored: false, events: [] };
+        // TS has no navigation result. The demo decides a navigation failure on the car (`navFails`) at the start.
+        return { ok: true, pickup, events: [] };
+      case "edit_routine":
+      case "archive_routine":
+        return reviseOccurrence(pickup, this.plan(key, spec), this.context());
       default:
-        return this.apply(key, pickup, actor, this.action(key, pickup, actor, spec));
+        return applyPickupAction(pickup, actor, this.action(key, pickup, actor, spec, expectedVersion), this.context());
     }
   }
 
-  private action(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec): PickupAction {
-    const expectedVersion = versionOf(pickup.version, "version" in spec ? spec.version : undefined);
+  /** Applies the edit to the routine and says where its occurrence goes now. */
+  private plan(key: string, spec: Extract<ActionSpec, { type: "edit_routine" | "archive_routine" }>): OccurrencePlan | null {
+    const definition = this.routines.get(key);
+    if (!definition) throw new Error(`${key} is not a routine occurrence`);
+    if (spec.type === "archive_routine") return null;
+    if (spec.assignee !== undefined) definition.assigneeId = spec.assignee;
+    if (spec.vehicle !== undefined) definition.vehicleId = spec.vehicle;
+    if (spec.place !== undefined) definition.place = spec.place;
+    if (spec.notifyBeforeMin !== undefined) definition.notifyBeforeMin = spec.notifyBeforeMin;
+    definition.wantedAt += (spec.shiftMinutes ?? 0) * minute;
+    definition.dayDropped ||= spec.dropDay === true;
+    if (definition.dayDropped) return null;
+    return {
+      wantedAt: definition.wantedAt, destination: this.placeDestination(definition.place), requester: definition.requester,
+      assigneeId: definition.assigneeId, vehicleId: definition.vehicleId, notifyBeforeMin: definition.notifyBeforeMin,
+    };
+  }
+
+  private action(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec, expectedVersion: number): PickupAction {
     const latestOffer = pickup.offer?.id ?? "no-offer";
     switch (spec.type) {
       case "accept":
@@ -220,91 +247,31 @@ class TsWorld {
         return { type: "cancel", expectedVersion, reason: "skipped" };
       case "confirm_location": {
         // P-07 / V-04: a saved place, or the current point as it is.
-        const destination: Destination | null = spec.place
-          ? resolveDestination(familyId, { source: "saved_place", placeId: spec.place }, this.places)
-          : { ...pickup.destination, confirmed: true };
-        if (!destination) throw new Error(`unknown place ${spec.place}`);
+        const destination = spec.place ? this.placeDestination(spec.place) : { ...pickup.destination, confirmed: true };
         return { type: "confirm_location", expectedVersion, destination };
       }
       case "ready":
         return { type: "ready", expectedVersion };
       case "not_met":
         return { type: "not_met", expectedVersion };
-      case "sweep":
-      case "vehicle_decline":
-      case "nav_result":
-        throw new Error(`${spec.type} is composed outside applyPickupAction`);
+      default:
+        throw new Error(`${spec.type} is not a pickup action`);
     }
   }
 
-  private context() {
-    return { now: this.now, members: this.members, vehicles: this.vehicles };
-  }
-
-  /** `applyDemoAction`: store the returned pickup (also when rejected) and keep the car's active guidance. */
-  private apply(key: string, pickup: Pickup, actor: Actor, action: PickupAction): Applied {
-    const result: PickupResult = applyPickupAction(this.withNotifyBefore(key, pickup), actor, action, this.context());
+  /** Stores a result as the demo does: the pickup (also when rejected) and every car's guidance. */
+  private record(key: string, actor: Actor, type: string, result: PickupResult): void {
     const next = result.pickup;
     this.pickups.set(key, next);
-    if (result.ok && action.type === "vehicle_start" && next.navigation && actor.kind === "vehicle") {
-      Object.assign(this.vehicle(actor.id), {
-        activePickupId: key, activeSessionId: next.navigation.sessionId, activeDestinationRevision: next.destinationRevision,
-      });
-    }
     for (const vehicle of this.vehicles) {
-      if (vehicle.activePickupId === key && (!isActivePickup(next) || (result.ok && action.type === "undo_en_route"))) {
-        Object.assign(vehicle, { activePickupId: null, activeSessionId: null, activeDestinationRevision: null });
-      }
+      const guidance = guidanceAfter(vehicle, actor, { type }, result);
+      if (guidance) Object.assign(vehicle, guidance);
     }
     if (next.navigation && this.sessions.get(key)?.at(-1)?.id !== next.navigation.sessionId) {
       this.sessions.set(key, [...this.sessions.get(key) ?? [], {
         id: next.navigation.sessionId, revision: next.navigation.destinationRevision,
       }]);
     }
-    return result.ok
-      ? { ok: true, code: null, ignored: result.ignored === true, events: result.events }
-      : { ok: false, code: result.code, ignored: false, events: result.events };
-  }
-
-  /** The demo builds occurrences without the routine's notify-before minutes; the spec shape passes them on. */
-  private withNotifyBefore(key: string, pickup: Pickup): Pickup {
-    const notifyBefore = this.notifyBefore.get(key);
-    return this.shape === "spec" && notifyBefore !== undefined ? { ...pickup, notifyBeforeMin: notifyBefore } : pickup;
-  }
-
-  /** `setDemoTime`, for one pickup. */
-  private sweep(key: string, pickup: Pickup): Applied {
-    const system: Actor = { kind: "system" };
-    if (pickup.status === "open" && this.now >= pickup.wantedAt + 60 * minute) {
-      return this.apply(key, pickup, system, { type: "expire" });
-    }
-    if (pickup.status === "arrived" && pickup.arrivedAt != null && this.now >= pickup.arrivedAt + 180 * minute) {
-      return this.apply(key, pickup, system, { type: "close_unconfirmed" });
-    }
-    if (pickup.offer?.status === "pending" && pickup.offer.expiresAt <= this.now) {
-      this.pickups.set(key, { ...pickup, offer: { ...pickup.offer, status: "expired" } });
-      return { ok: true, code: null, ignored: false, events: ["offer_expired"] };
-    }
-    return { ok: true, code: null, ignored: false, events: [] };
-  }
-
-  /** `cannotGo` (open request, own assignment) and `answerOffer` (an offer to this driver) in vehicle.tsx. */
-  private cannotGo(key: string, pickup: Pickup, actor: Actor): Applied {
-    if (actor.kind !== "vehicle") throw new Error("vehicle_decline needs a vehicle actor");
-    const offer = pickup.offer;
-    const expectedVersion = pickup.version;
-    if (pickup.status === "open") {
-      if (offer?.status === "pending" && offer.fromMemberId == null && !offer.declinedBy.includes(actor.driverId)) {
-        return this.apply(key, pickup, actor, { type: "respond_offer", expectedVersion, offerId: offer.id, response: "decline" });
-      }
-      // The demo records the refusal in its history only (`request_declined`); the pickup does not change.
-      return { ok: true, code: null, ignored: false, events: ["request_declined"] };
-    }
-    const own = pickup.assigneeId === actor.driverId && pickup.vehicleId === actor.id;
-    if (!own && offer?.status === "pending" && offer.fromMemberId !== actor.driverId) {
-      return this.apply(key, pickup, actor, { type: "respond_offer", expectedVersion, offerId: offer.id, response: "decline" });
-    }
-    return this.apply(key, pickup, actor, { type: "offer", expectedVersion, offerId: this.id("offer") });
   }
 
   private id(prefix: string): string {
@@ -312,7 +279,7 @@ class TsWorld {
     return `${prefix}-${this.sequence}`;
   }
 
-  private outcome(before: Pickup, after: Pickup, applied: Applied): Outcome {
+  private outcome(before: Pickup, after: Pickup, result: PickupResult): Outcome {
     const stamps: Record<Stamp, number | null | undefined> = {
       acceptedAt: after.acceptedAt, enRouteAt: after.enRouteAt, arrivedAt: after.arrivedAt,
       readyAt: after.readyAt, notMetAt: after.notMetAt,
@@ -335,34 +302,27 @@ class TsWorld {
       }
       : null;
     return {
-      ok: applied.ok,
-      code: applied.code,
-      ignored: applied.ignored,
+      ok: result.ok,
+      code: result.ok ? null : result.code,
+      ignored: result.ok && result.ignored === true,
       status: after.status,
       assignee: after.assigneeId,
       vehicle: after.vehicleId,
       version: after.version,
       round: after.assignmentRound,
+      wantedInMin: Math.round((after.wantedAt - this.now) / minute),
       confirmed: after.destination.confirmed,
       destinationRevision: after.destinationRevision,
+      customized: after.customized === true,
+      announced: after.routineOfferAt != null,
       navSession: after.navigation !== null,
       newNavSession: after.navigation !== null && after.navigation.sessionId !== before.navigation?.sessionId,
       set,
       offer,
       resolved,
-      events: [...applied.events],
+      events: [...result.events],
       active: Object.fromEntries(this.vehicles.map((vehicle) => [vehicle.id, vehicle.activePickupId ?? null])),
       pickupCount: this.pickups.size,
     };
   }
-}
-
-/** `makePickup` in apps/web/src/demo-domain.ts. */
-function makePickup(id: string, requester: Requester, destination: Destination, wantedAt: number,
-  source: Pickup["source"], assigneeId: string | null = null, vehicleId: string | null = null): Pickup {
-  return {
-    id, familyId, requester, destination, wantedAt, source, assigneeId, vehicleId,
-    status: assigneeId ? "assigned" : "open", assignmentRound: assigneeId ? 1 : 0, version: 1, destinationRevision: 1,
-    acceptedAt: null, navigation: null, offer: null, readyAt: null, notMetAt: null,
-  };
 }

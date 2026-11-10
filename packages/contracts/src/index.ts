@@ -88,6 +88,10 @@ export type Pickup = {
   enRouteAt?: number | null;
   /** A routine occurrence's `notify_before_min`, which bounds a handoff's expiry (F-11). Absent means 20. */
   notifyBeforeMin?: number | null;
+  /** SQL `is_customized`: someone changed this occurrence, so a routine edit leaves it alone (F-07, S-16, S-28). */
+  customized?: boolean;
+  /** SQL `routine_offer_created_at`: an open occurrence is offered to every driver once (4.4 #4, F-21, A.4). */
+  routineOfferAt?: number | null;
 };
 
 export type Actor =
@@ -147,7 +151,13 @@ export type PickupEvent =
   | "location_confirmed"
   | "rider_ready"
   | "not_met_reported"
-  | "closed_unconfirmed";
+  | "closed_unconfirmed"
+  /** F-12: a car's "못 가요" on an open request (`vehicle_decline`). */
+  | "request_declined"
+  /** 4.4 #12: a routine edit gave a non-customized occurrence another holder. */
+  | "routine_reassigned"
+  /** A member left or was removed and their trip moved to another guardian (server only). */
+  | "member_reassigned";
 
 export type PickupResult =
   | { ok: true; pickup: Pickup; events: readonly PickupEvent[]; ignored?: true }
@@ -262,6 +272,14 @@ export function resolveDestination(
   }
 }
 
+/** The family-wide offer of an open routine occurrence (4.4 #4): it lasts until wanted_at, and at least 10 minutes. */
+export function routineFamilyOffer(pickup: Pick<Pickup, "id" | "wantedAt">, now: number): PickupOffer {
+  return {
+    id: `${pickup.id}:routine`, status: "pending", fromMemberId: null, toMemberId: null,
+    expiresAt: Math.max(pickup.wantedAt, now + 10 * minute), declinedBy: [],
+  };
+}
+
 function closeOffer(offer: PickupOffer | null, status: OfferStatus): PickupOffer | null {
   return offer?.status === "pending" ? { ...offer, status } : offer;
 }
@@ -285,6 +303,8 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
   const isDriver = !!member && recipients.includes(member.id);
   const offer = pickup.offer;
   const actionOffer = "offerId" in action && action.offerId === offer?.id ? offer : null;
+  // SQL marks a routine occurrence customized when it is taken; some transitions mark any pickup.
+  const takenRoutine = Boolean(pickup.customized) || pickup.source === "routine";
 
   if ((actor.kind === "member" && !member) || (actor.kind === "rider" && !isRequester) ||
       (actor.kind === "vehicle" && (!member || (context.vehicles !== undefined && !vehicle)))) {
@@ -363,6 +383,7 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       return ok(update({
         ...assign(member.id, vehicleId ?? (pickup.assigneeId === member.id ? pickup.vehicleId : null)),
         offer: nextOffer,
+        customized: takenRoutine,
       }), "accepted");
     }
     case "offer": {
@@ -377,7 +398,8 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if ((action.note?.length ?? 0) > 40) return fail("VALIDATION");
       if (offer?.id === action.offerId && offer.status === "pending") return ok();
       const limit = Math.min(now + 10 * minute, pickup.wantedAt - (pickup.notifyBeforeMin ?? 20) * minute);
-      return ok({ ...pickup, offer: { id: action.offerId, status: "pending", fromMemberId: memberId,
+      return ok({ ...pickup, customized: takenRoutine,
+        offer: { id: action.offerId, status: "pending", fromMemberId: memberId,
         toMemberId: action.toMemberId ?? null, expiresAt: limit > now ? limit : now + 5 * minute,
         note: action.note, declinedBy: [] } }, "offered");
     }
@@ -399,7 +421,7 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       }
       const vehicleId = getVehicleId(action.vehicleId);
       if (vehicleId === undefined) return fail("VALIDATION");
-      return ok(update({ ...assign(memberId!, vehicleId),
+      return ok(update({ ...assign(memberId!, vehicleId), customized: true,
         offer: { ...actionOffer, status: "accepted", acceptedBy: memberId! } }), "offer_accepted");
     }
     case "cancel_offer":
@@ -413,7 +435,8 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (pickup.assigneeId === member.id) return ok();
       const vehicleId = getVehicleId(action.vehicleId);
       if (vehicleId === undefined) return fail("VALIDATION");
-      return ok(update({ ...assign(member.id, vehicleId), offer: closeOffer(offer, "cancelled") }), "took_over");
+      return ok(update({ ...assign(member.id, vehicleId), customized: takenRoutine, offer: closeOffer(offer, "cancelled") }),
+        "took_over");
     }
     case "depart":
       if (actor.kind !== "member" || !isAssignee) return fail("NOT_ASSIGNEE");
@@ -439,7 +462,9 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       }
       if (pickup.status === "open") {
         const nextOffer = offer?.status === "pending" ? { ...offer, status: "accepted" as const, acceptedBy: member.id } : offer;
-        return ok(update({ ...assign(member.id, actor.id), status: "en_route", enRouteAt: now, navigation, offer: nextOffer }), "accepted", "en_route");
+        return ok(update({
+          ...assign(member.id, actor.id), status: "en_route", enRouteAt: now, navigation, offer: nextOffer, customized: takenRoutine,
+        }), "accepted", "en_route");
       }
       if (pickup.status !== "assigned") return fail("INVALID_STATE");
       if (pickup.assigneeId === member.id) {
@@ -449,7 +474,7 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (now >= actionOffer.expiresAt) {
         return fail("NO_VALID_OFFER", { ...pickup, offer: { ...actionOffer, status: "expired" } }, "offer_expired");
       }
-      return ok(update({ ...assign(member.id, actor.id), status: "en_route", enRouteAt: now, navigation,
+      return ok(update({ ...assign(member.id, actor.id), status: "en_route", enRouteAt: now, navigation, customized: takenRoutine,
         offer: { ...actionOffer, status: "accepted", acceptedBy: member.id } }), "offer_accepted", "en_route");
     }
     case "arrive":
@@ -476,7 +501,7 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
           (pickup.status !== "open" && pickup.status !== "assigned"))) return fail("INVALID_STATE");
       if (!isActivePickup(pickup) || (pickup.status === "arrived" && (actor.kind !== "member" || action.reason !== "not_met")) ||
           (actor.kind === "rider" && pickup.source !== "request")) return fail("INVALID_STATE");
-      return ok(update({ status: "cancelled", offer: closeOffer(offer, "cancelled") }), "cancelled");
+      return ok(update({ status: "cancelled", offer: closeOffer(offer, "cancelled"), customized: true }), "cancelled");
     case "confirm_location": {
       if (actor.kind !== "member" && (actor.kind !== "vehicle" || !actor.parked || !isDriver)) return fail("FORBIDDEN");
       if (!isActivePickup(pickup)) return fail("INVALID_STATE");
@@ -487,21 +512,18 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
         previous.source !== next.source || previous.note !== next.note || previous.placeId !== next.placeId ||
         previous.pickupPointId !== next.pickupPointId;
       if (!changed && pickup.destination.confirmed) return ok();
-      return ok(update({ destination: { ...action.destination, confirmed: true },
+      return ok(update({ destination: { ...action.destination, confirmed: true }, customized: true,
         destinationRevision: pickup.destinationRevision + Number(changed) }), "location_confirmed");
     }
     case "ready": {
       if (!isRequester) return fail("FORBIDDEN");
       if (pickup.source !== "routine" || (pickup.status !== "open" && pickup.status !== "assigned")) return fail("INVALID_STATE");
       if (pickup.readyAt !== null) return ok();
-      // 4.3 #16, F-15: an occurrence nobody has taken is offered to every driver, unless it already had an offer.
-      const familyOffer: PickupOffer | null = pickup.status === "open" && offer === null
-        ? {
-          id: `${pickup.id}:ready`, status: "pending", fromMemberId: null, toMemberId: null,
-          expiresAt: Math.max(pickup.wantedAt, now + 10 * minute), declinedBy: [],
-        }
-        : offer;
-      return ok(update({ readyAt: now, offer: familyOffer }), "rider_ready");
+      // 4.3 #16, F-15: an occurrence nobody has taken is offered to every driver, once (as rider_ready_early).
+      if (pickup.status === "open" && offer?.status !== "pending" && pickup.routineOfferAt == null) {
+        return ok(update({ readyAt: now, offer: routineFamilyOffer(pickup, now), routineOfferAt: now }), "rider_ready");
+      }
+      return ok(update({ readyAt: now }), "rider_ready");
     }
     case "not_met":
       if (!isRequester) return fail("FORBIDDEN");
@@ -518,3 +540,5 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       return ok(update({ status: "closed_unconfirmed" }), "closed_unconfirmed");
   }
 }
+
+export * from "./composition.ts";

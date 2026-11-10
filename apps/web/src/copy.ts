@@ -393,6 +393,8 @@ export const copy = {
   acceptOffer: '수락',
   decline: '거절',
   declineRequest: '못 가요',
+  routineReassigned: '루틴이 바뀌어 담당이 바뀌었어요',
+  memberReassigned: '보호자가 바뀌어 담당이 넘어갔어요',
   departure: '출발했어요',
   arrival: '도착했어요',
   boarded: '태웠어요',

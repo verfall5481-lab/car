@@ -127,7 +127,7 @@ export function terminalTimes(rows: z.infer<typeof pickupRow>[]) {
   }));
 }
 
-const eventKinds: readonly (PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined')[] = ['requested', 'accepted', 'offered', 'offer_accepted', 'offer_declined', 'offer_cancelled', 'offer_expired', 'took_over', 'en_route', 'en_route_undone', 'navigation_requested', 'nav_failed', 'nav_ok', 'request_declined', 'arrived', 'arrival_ignored', 'completed', 'cancelled', 'expired', 'location_confirmed', 'rider_ready', 'not_met_reported', 'closed_unconfirmed'];
+const eventKinds: readonly (PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined')[] = ['requested', 'accepted', 'offered', 'offer_accepted', 'offer_declined', 'offer_cancelled', 'offer_expired', 'took_over', 'en_route', 'en_route_undone', 'navigation_requested', 'nav_failed', 'nav_ok', 'request_declined', 'arrived', 'arrival_ignored', 'completed', 'cancelled', 'expired', 'location_confirmed', 'rider_ready', 'not_met_reported', 'closed_unconfirmed', 'routine_reassigned', 'member_reassigned'];
 function mapEvent(event: z.infer<typeof eventRow>, id: string): History | null {
   const kind = event.event_type === 'created' ? 'requested' : eventKinds.find((key) => key === event.event_type);
   return kind ? { pickupId: event.pickup_id ?? id, at: Date.parse(event.created_at), event: kind, actor: event.actor_id ?? 'system' } : null;

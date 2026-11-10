@@ -211,6 +211,7 @@ export const eventText: Record<History['event'], string> = {
   arrived: copy.statuses.arrived, arrival_ignored: copy.carIgnoredCallback, completed: copy.statuses.completed,
   cancelled: copy.statuses.cancelled, expired: copy.statuses.expired, location_confirmed: copy.confirmHere,
   rider_ready: copy.routineEarly, not_met_reported: copy.notMetRider, closed_unconfirmed: copy.statuses.closed_unconfirmed,
+  routine_reassigned: copy.routineReassigned, member_reassigned: copy.memberReassigned,
 };
 
 export function StepCheck({ done }: { done: boolean }) {

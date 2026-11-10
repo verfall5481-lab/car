@@ -596,5 +596,47 @@ select is((select string_agg((o.to_member_id is null)::text||':'||o.status,',' o
 select is((select status||':'||deriro_private.member_name(assignee_member_id) from public.pickups where id=pg_temp.fixture(1153)),
   'assigned:엄마','엄마 still holds the trip');
 
+-- 4.5, V-03: the race result comes before the version check. 이모's car drew 아빠's request card at version 1, before
+-- 엄마 accepted and departed. "출발하고 안내" on that card still tells the car who won, and changes nothing.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,(value#>>'{data,pickup,version}')::int,pg_temp.fixture(1196))
+  #>>'{error,code}'||':'||(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,(value#>>'{data,pickup,version}')::int,
+  pg_temp.fixture(1196))#>>'{error,detail,by}'),'ALREADY_TAKEN:엄마','a card drawn before 엄마 accepted still hears that she won')
+  from saved where name='dad_request';
+reset role;
+select is((select p.status||':'||p.version||':'||coalesce(p.nav_session_id::text,'-') from public.pickups p join saved s
+  on s.name='dad_request' and p.id=(s.value#>>'{data,pickup,id}')::uuid),
+  'en_route:'||(select value::text from saved where name='version_race')||':-','the lost race writes nothing');
+-- Every other start keeps the version check (S-29): a stale card on an open request, and a stale handoff card.
+insert into public.pickups(id,family_id,rider_id,source,status,place_id,location_source,location_confirmed,
+  dest_lat,dest_lng,dest_label,wanted_at)
+values(pg_temp.fixture(1059),pg_temp.fixture(1010),pg_temp.fixture(1021),'request','open',pg_temp.fixture(1031),'saved_place',true,
+  37.55,127.1,'수학학원',now()+interval '5 minutes');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select is(public.vehicle_start_now(pg_temp.fixture(1059),0,pg_temp.fixture(1197))#>>'{error,code}','STALE_VERSION',
+  'a stale card on an open request is still STALE_VERSION');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153')-1,pg_temp.fixture(1198),
+  (select (value#>>'{data,offer,id}')::uuid from saved where name='offer_to_dad'))#>>'{error,code}','STALE_VERSION',
+  'a stale handoff card (with an offer ID) is still STALE_VERSION');
+reset role;
+select is((select status::text from public.pickups where id=pg_temp.fixture(1059)),'open','the stale start changed nothing');
+-- 8.3.1 "en_route, 이 차가 배정 차량": the trip's own car re-opens guidance even after its driver was switched, so it is
+-- not treated as a car that lost the race.
+update public.pickups set vehicle_id=pg_temp.fixture(1141) where id=(select (value#>>'{data,pickup,id}')::uuid from saved where name='dad_request');
+insert into saved select 'version_own_car',to_jsonb(p.version) from saved s join public.pickups p
+  on p.id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,(select v.value::int from saved v where v.name='version_own_car'),
+  pg_temp.fixture(1199))#>>'{data,pickup,status}','en_route','the trip''s own car gets a new guidance session')
+  from saved where name='dad_request';
+reset role;
+select is((select deriro_private.member_name(p.assignee_member_id)||':'||(p.nav_session_id is not null) from public.pickups p
+  join saved s on s.name='dad_request' and p.id=(s.value#>>'{data,pickup,id}')::uuid),'엄마:true',
+  're-opening guidance keeps 엄마 as the assignee');
+
 select * from finish();
 rollback;

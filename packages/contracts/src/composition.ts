@@ -1,7 +1,7 @@
 // What the server does around single transitions: creating requests and routine occurrences, the scheduler pass,
 // the car's "못 가요", routine revision, and the car's one active guidance. Each function mirrors the SQL function it
 // names. The browser demo and the conformance suite call these, so the demo behaves as the backend does.
-import { applyPickupAction, isActivePickup, requestRecipients, routineFamilyOffer } from "./index.ts";
+import { applyPickupAction, familyOfferId, isActivePickup, requestRecipients, routineFamilyOffer } from "./index.ts";
 import type {
   Actor,
   Destination,
@@ -31,7 +31,7 @@ export function newRequestPickup(input: NewPickup): Pickup {
   return {
     ...blankPickup(input, "request"),
     offer: {
-      id: `${input.id}:request`, status: "pending", fromMemberId: null, toMemberId: null,
+      id: familyOfferId(input.id, "request"), status: "pending", fromMemberId: null, toMemberId: null,
       expiresAt: input.wantedAt + 60 * minute, declinedBy: [],
     },
   };

@@ -7,6 +7,7 @@ import {
   applyPickupAction,
   canRequestPickup,
   declineFromVehicle,
+  familyOfferId,
   guidanceAfter,
   newOccurrencePickup,
   newRequestPickup,
@@ -228,9 +229,10 @@ class TsWorld {
         const slot = `${actor.kind === "vehicle" ? actor.id : "?"}|${key}`;
         const actionId = spec.retry ? this.actionIds.get(slot) ?? this.id("action") : this.id("action");
         this.actionIds.set(slot, actionId);
+        const family = familyOfferId(key, pickup.source === "request" ? "request" : "routine");
         return {
           type: "vehicle_start", expectedVersion, actionId, sessionId: this.id("session"),
-          offerId: spec.withOffer ? pickup.offer?.id : undefined,
+          offerId: spec.withOffer === "family" ? family : spec.withOffer ? pickup.offer?.id : undefined,
         };
       }
       case "arrive":
@@ -308,6 +310,7 @@ class TsWorld {
     return {
       ok: result.ok,
       code: result.ok ? null : result.code,
+      by: result.ok ? null : result.by ?? null,
       ignored: result.ok && result.ignored === true,
       status: after.status,
       assignee: after.assigneeId,

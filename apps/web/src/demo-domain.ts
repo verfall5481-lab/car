@@ -46,7 +46,10 @@ export type DemoState = {
   invite: { code: string; riderId: string; expiresAt: number; used: boolean };
   notifications: boolean; sms: boolean;
 };
-export type Change = { ok: true; state: DemoState; ignored?: true } | { ok: false; state: DemoState; code: string };
+export type Change =
+  | { ok: true; state: DemoState; ignored?: true }
+  /** `by`: with ALREADY_TAKEN, the name of whoever holds the trip, as the server's `detail.by`. */
+  | { ok: false; state: DemoState; code: string; by?: string };
 export const minute = 60_000;
 export const familyId = 'demo-family';
 export const demoStart = Date.parse('2026-11-04T17:02:00+09:00');
@@ -138,7 +141,7 @@ export function nearbyPlaces(state: DemoState, point: Coordinates) {
     .sort((a, b) => a.distance - b.distance).slice(0, 2);
 }
 
-const fail = (state: DemoState, code: string): Change => ({ ok: false, code, state });
+const fail = (state: DemoState, code: string, by?: string): Change => ({ ok: false, code, state, by });
 export const changed = (state: DemoState): Change => ({ ok: true, state });
 
 // F-05: 6 characters without the confusable 0/O, 1/I/L; valid for 10 minutes.
@@ -224,14 +227,15 @@ function context(state: DemoState, now: number) {
 
 /** Stores a result as the server would: the pickup (also when rejected), the car's guidance and the history rows. */
 function record(state: DemoState, before: Pickup, actor: Actor, type: string, result: PickupResult, now: number, detail?: string): Change {
-  if (result.pickup === before && !result.events.length) return result.ok ? { ok: true, state, ignored: result.ignored } : fail(state, result.code);
+  const by = !result.ok && result.by ? nameOf(state, result.by) : undefined;
+  if (result.pickup === before && !result.events.length) return result.ok ? { ok: true, state, ignored: result.ignored } : fail(state, result.code, by);
   const guidance = guidanceAfter(state.vehicle, actor, { type }, result);
   const vehicle = guidance ? { ...state.vehicle, ...guidance, navError: guidance.activePickupId ? state.vehicle.navFails : false } : state.vehicle;
   const actorId = actor.kind === 'vehicle' ? actor.driverId : actor.kind === 'system' ? 'system' : actor.id;
   const rows = result.events.filter((event) => event !== 'arrival_ignored' && event !== 'navigation_requested')
     .map((event) => ({ pickupId: before.id, at: now, event, actor: actorId, detail }));
   const updated = { ...state, vehicle, pickups: state.pickups.map((p) => p.id === before.id ? result.pickup : p), history: [...rows, ...state.history] };
-  return result.ok ? { ok: true, state: updated, ignored: result.ignored } : fail(updated, result.code);
+  return result.ok ? { ok: true, state: updated, ignored: result.ignored } : fail(updated, result.code, by);
 }
 
 function vehicleRefusal(state: DemoState, actor: Actor): Change | null {

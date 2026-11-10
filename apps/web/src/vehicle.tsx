@@ -172,26 +172,32 @@ export function VehicleScreen({ state, operations, simulator }: { state: DemoSta
     }
     setMode('home');
     setManual(null);
-    // A new action ID for every press; the live client reuses it only to retry the same press (8.3.1).
-    const action: PickupAction = { type: 'vehicle_start', expectedVersion: item.version, sessionId: uid(), actionId: uid(), offerId: item.offer?.id };
+    // A new action ID for every press; the live client reuses it only to retry the same press (8.3.1). Only a handoff
+    // card sends its offer ID (8.3.1); a request or routine card sends none.
+    const offerId = model.receivedOffer(item)?.id;
+    const action: PickupAction = { type: 'vehicle_start', expectedVersion: item.version, sessionId: uid(), actionId: uid(), offerId };
     const result = await operations.act(item, action, undefined, { confirmedSwitch });
     if (result.ok && !result.state.vehicle.navError) toast(operations.live ? copy.carSimNavRequested : copy.openNavDemo);
-    else if (!result.ok) closeIfTaken(item, result.state);
+    else if (!result.ok) closeIfTaken(item, result);
   }
   function dismiss(item: Pickup) {
     setHidden((ids) => [...ids, item.id]);
   }
-  // V-03: when another member took the pickup first, say who and close the card after 3 seconds.
-  function closeIfTaken(item: Pickup, latestState: DemoState) {
-    const latest = latestState.pickups.find(({ id }) => id === item.id);
-    if (!latest?.assigneeId || latest.assigneeId === driverId) return;
-    toast(copy.carTakenBy(nameOf(latestState, latest.assigneeId)));
+  // V-03: when another member took the pickup first, say who (the answer's `by`, else the reloaded pickup) and close
+  // the card after 3 seconds.
+  function closeIfTaken(item: Pickup, result: Change) {
+    if (result.ok) return;
+    const latest = result.state.pickups.find(({ id }) => id === item.id);
+    const holder = latest?.assigneeId && latest.assigneeId !== driverId ? nameOf(result.state, latest.assigneeId) : undefined;
+    const name = result.code === 'ALREADY_TAKEN' && result.by ? result.by : holder;
+    if (!name) return;
+    toast(copy.carTakenBy(name));
     window.setTimeout(() => dismiss(item), 3000);
   }
   async function answerOffer(item: Pickup, offerId: string, response: 'accept' | 'decline', from: string) {
     const action: PickupAction = { type: 'respond_offer', expectedVersion: item.version, offerId, response };
     const result = await doAction(item, action, response === 'decline' ? copy.carDeclinedTo(from) : undefined);
-    if (!result.ok) closeIfTaken(item, result.state);
+    if (!result.ok) closeIfTaken(item, result);
   }
   // F-10: the server's "수락" only takes the pickup; departure comes later from the card.
   async function accept(item: Pickup) {
@@ -200,7 +206,7 @@ export function VehicleScreen({ state, operations, simulator }: { state: DemoSta
       { type: 'respond_offer', expectedVersion: item.version, offerId: offer.id, response: 'accept' } :
       { type: 'accept' };
     const result = await doAction(item, action);
-    if (!result.ok) closeIfTaken(item, result.state);
+    if (!result.ok) closeIfTaken(item, result);
   }
   async function confirmLocation(item: Pickup, placeId?: string) {
     const destination = placeId ?

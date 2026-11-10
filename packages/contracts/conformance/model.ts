@@ -63,8 +63,12 @@ export type ActionSpec =
   | { type: "take_over"; vehicle?: string; version?: Version }
   | { type: "depart"; version?: Version }
   | { type: "undo"; version?: Version }
-  /** "출발하고 안내". `withOffer` passes the latest offer ID; `retry` resends this car's previous action ID. */
-  | { type: "vehicle_start"; withOffer?: boolean; retry?: boolean; version?: Version }
+  /**
+   * "출발하고 안내". `withOffer` passes the latest offer ID (as a card does), or with "family" the ID of the pickup's
+   * family-wide offer, as a request or routine card drawn before a handoff still does. `retry` resends this car's
+   * previous action ID.
+   */
+  | { type: "vehicle_start"; withOffer?: boolean | "family"; retry?: boolean; version?: Version }
   | { type: "nav_result"; result: "ok" | "failed" }
   | { type: "arrive"; version?: Version }
   /**
@@ -115,6 +119,8 @@ export type SqlFacts = {
 export type Outcome = {
   ok: boolean;
   code: string | null;
+  /** With ALREADY_TAKEN: who holds the trip (SQL `detail.by`). */
+  by: string | null;
   ignored: boolean;
   status: PickupStatus;
   assignee: string | null;
@@ -143,7 +149,7 @@ export type Outcome = {
 };
 
 export const comparedFields = [
-  "ok", "code", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed",
+  "ok", "code", "by", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed",
   "destinationRevision", "customized", "announced", "navSession", "newNavSession", "set", "offer", "resolved", "events",
   "active", "pickupCount",
 ] as const;
@@ -152,6 +158,7 @@ export type ComparedField = typeof comparedFields[number];
 export type Expect = {
   /** Omitted: the step must succeed. */
   code?: string;
+  by?: string | null;
   ignored?: boolean;
   status?: PickupStatus;
   assignee?: string | null;

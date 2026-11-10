@@ -53,24 +53,31 @@ export const scenarios: readonly Scenario[] = [
     pickups: [request()],
     steps: [
       { actor: "mom", do: { type: "accept" }, expect: { assignee: "mom", version: 2, events: ["accepted"] } },
-      { actor: "dad", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", version: 2, events: [] } },
+      { actor: "dad", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", by: "mom", assignee: "mom", version: 2, events: [] } },
       { actor: "mom", do: { type: "accept" }, expect: { assignee: "mom", version: 2, events: [] } },
       { actor: "mom", do: { type: "depart" }, expect: { status: "en_route", version: 3 } },
-      { actor: "dad", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", status: "en_route", events: [] } },
+      { actor: "dad", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", by: "mom", status: "en_route", events: [] } },
       { actor: "mom", do: { type: "accept" }, expect: { status: "en_route", version: 3, events: [] } },
       // F-10, V-03 button table: the car that loses also hears who took it ("엄마가 먼저 맡았어요"), from the request card's
-      // "수락" and from its "출발하고 안내" (no offer ID), whatever version the card showed (4.5). Nothing changes.
-      { actor: "car", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", version: 3, events: [] } },
+      // "수락" and from its "출발하고 안내", whatever version the card showed (4.5). The card sends no offer ID or the
+      // request offer's ID, which has no sender. Nothing changes.
+      { actor: "car", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", by: "mom", assignee: "mom", version: 3, events: [] } },
       {
         actor: "car", do: { type: "vehicle_start" },
-        expect: { code: "ALREADY_TAKEN", status: "en_route", version: 3, navSession: false, events: [], active: { car: null } },
+        expect: {
+          code: "ALREADY_TAKEN", by: "mom", status: "en_route", version: 3, navSession: false, events: [], active: { car: null },
+        },
       },
       {
         actor: "car", do: { type: "vehicle_start", version: { stale: 2 } },
-        expect: { code: "ALREADY_TAKEN", status: "en_route", version: 3, events: [] },
+        expect: { code: "ALREADY_TAKEN", by: "mom", status: "en_route", version: 3, events: [] },
+      },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true, version: { stale: 2 } },
+        expect: { code: "ALREADY_TAKEN", by: "mom", status: "en_route", version: 3, resolved: null, events: [] },
       },
       { actor: "mom", do: { type: "arrive" }, expect: { status: "arrived", version: 4 } },
-      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", status: "arrived", events: [] } },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", by: "mom", status: "arrived", events: [] } },
       { actor: "mom", do: { type: "board" }, expect: { status: "completed" } },
       { actor: "car", do: { type: "vehicle_start" }, expect: { code: "INVALID_STATE", status: "completed", events: [] } },
     ],
@@ -346,7 +353,7 @@ export const scenarios: readonly Scenario[] = [
     steps: [
       { actor: "car", do: { type: "vehicle_start", version: { stale: 1 } }, expect: { code: "STALE_VERSION", status: "open", events: [] } },
       {
-        actor: "car", do: { type: "vehicle_start" },
+        actor: "car", do: { type: "vehicle_start", withOffer: true },
         expect: {
           status: "en_route", assignee: "dad", vehicle: "car", version: 2, round: 1, set: ["acceptedAt", "enRouteAt"],
           navSession: true, newNavSession: true, offer: null, resolved: { from: null, status: "accepted", by: "dad" },
@@ -376,13 +383,13 @@ export const scenarios: readonly Scenario[] = [
     family: grandpa,
     pickups: [routine({ assignee: "mom" })],
     steps: [
-      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", events: [] } },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", by: "mom", assignee: "mom", events: [] } },
       { actor: "mom", do: { type: "offer", to: "grandpa" }, expect: { offer: { from: "mom", to: "grandpa" } } },
       {
         actor: "car", do: { type: "vehicle_start", withOffer: true },
         expect: { code: "NO_VALID_OFFER", assignee: "mom", offer: { from: "mom", to: "grandpa" }, events: [] },
       },
-      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", events: [] } },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", by: "mom", assignee: "mom", events: [] } },
       { actor: "mom", do: { type: "offer", to: "dad" }, expect: { offer: { from: "mom", to: "dad", expiresInMin: 10 } } },
       { clock: 11 },
       {
@@ -835,7 +842,46 @@ export const scenarios: readonly Scenario[] = [
           events: ["navigation_requested"], active: { car: "p" },
         },
       },
+      // The same with the card's offer ID (the accepted request offer): still the trip's own car, still a new session.
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true },
+        expect: { by: null, newNavSession: true, events: ["navigation_requested"], active: { car: "p" } },
+      },
       { actor: "car", do: { type: "nav_arrival" }, expect: { status: "arrived", events: ["arrived"] } },
+    ],
+  },
+  {
+    name: "48. V-03, 4.5: a car that pressed \"출발하고 안내\" on an announced open routine that someone else took hears who " +
+      "took it, whatever version its card showed; nothing changes",
+    pickups: [routine({ wantedInMin: 15 })],
+    steps: [
+      { actor: "system", do: { type: "sweep" }, expect: { status: "open", announced: true, offer: { from: null, to: null } } },
+      { actor: "mom", do: { type: "accept" }, expect: { assignee: "mom", version: 2, resolved: { from: null, status: "accepted", by: "mom" } } },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true, version: { stale: 1 } },
+        expect: { code: "ALREADY_TAKEN", by: "mom", status: "assigned", assignee: "mom", version: 2, resolved: null, events: [] },
+      },
+    ],
+  },
+  {
+    name: "49. V-03, 8.3.1: a request card drawn before a handoff still carries the request offer's ID and gets ALREADY_TAKEN; " +
+      "the handoff card's own offer ID takes the handoff path",
+    family: grandpa,
+    pickups: [request()],
+    steps: [
+      { actor: "mom", do: { type: "accept" }, expect: { assignee: "mom", version: 2 } },
+      { actor: "mom", do: { type: "offer", to: "grandpa" }, expect: { offer: { from: "mom", to: "grandpa" } } },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: "family", version: { stale: 1 } },
+        expect: {
+          code: "ALREADY_TAKEN", by: "mom", assignee: "mom", version: 2, offer: { from: "mom", to: "grandpa" }, resolved: null,
+          events: [],
+        },
+      },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true },
+        expect: { code: "NO_VALID_OFFER", by: null, assignee: "mom", offer: { from: "mom", to: "grandpa" }, events: [] },
+      },
     ],
   },
 ];

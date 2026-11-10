@@ -78,7 +78,11 @@ export async function runSql(db: PGlite, scenario: Scenario): Promise<Run> {
   return { created, steps };
 }
 
-type Rpc = { ok?: boolean; error?: { code?: string }; data?: { ignored?: boolean; pickup?: { id?: string } } };
+type Rpc = {
+  ok?: boolean;
+  error?: { code?: string; detail?: { by?: string } };
+  data?: { ignored?: boolean; pickup?: { id?: string } };
+};
 
 type PickupRow = {
   status: Outcome["status"];
@@ -327,8 +331,9 @@ class SqlWorld {
         const slot = `${step.actor}|${key}`;
         const actionId = spec.retry ? this.actionIds.get(slot) ?? randomUUID() : randomUUID();
         this.actionIds.set(slot, actionId);
-        return call("vehicle_start_now($1::uuid, $2::int, $3::uuid, $4::uuid)",
-          [pickup, version, actionId, spec.withOffer ? latestOffer : null]);
+        const family = before.offers.filter((offer) => offer.from_member_id === null).at(-1)?.id ?? null;
+        const offerId = spec.withOffer === "family" ? family : spec.withOffer ? latestOffer : null;
+        return call("vehicle_start_now($1::uuid, $2::int, $3::uuid, $4::uuid)", [pickup, version, actionId, offerId]);
       }
       case "nav_result":
         return call("report_nav_result($1::uuid, $2::uuid, $3::text)", [pickup, before.pickup.nav_session_id, spec.result]);
@@ -440,6 +445,8 @@ class SqlWorld {
     return {
       ok: response.ok === true,
       code: response.ok === true ? null : response.error?.code ?? "NO_RESPONSE",
+      // The server names the holder by display name; names are unique in a family.
+      by: this.family.members.find(({ name }) => name === response.error?.detail?.by)?.key ?? null,
       ignored: response.data?.ignored === true,
       status: row.status,
       assignee: this.key(row.assignee_member_id),

@@ -288,7 +288,9 @@ function LiveVehicleSurface({ session }: { session: Session | null }) {
       return { ok: true, state: await refresh(), ignored: ignored ? true : undefined };
     } catch (error) {
       fail(error);
-      return { ok: false, state: await refresh(), code: errorCode(error) || 'NETWORK' };
+      // ALREADY_TAKEN names who holds the trip (detail.by), for the car's "…가 먼저 맡았어요".
+      const by = error instanceof RpcError && error.code === 'ALREADY_TAKEN' ? (error.detail as { by?: unknown } | undefined)?.by : undefined;
+      return { ok: false, state: await refresh(), code: errorCode(error) || 'NETWORK', by: typeof by === 'string' ? by : undefined };
     } finally {
       setPending(false);
     }

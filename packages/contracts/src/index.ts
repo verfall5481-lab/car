@@ -161,7 +161,11 @@ export type PickupEvent =
 
 export type PickupResult =
   | { ok: true; pickup: Pickup; events: readonly PickupEvent[]; ignored?: true }
-  | { ok: false; code: PickupError; pickup: Pickup; events: readonly PickupEvent[] };
+  | {
+    ok: false; code: PickupError; pickup: Pickup; events: readonly PickupEvent[];
+    /** With ALREADY_TAKEN: the member who holds the trip (the server's `detail.by` names them). */
+    by?: string;
+  };
 
 export type PickupContext = {
   now: number;
@@ -272,10 +276,22 @@ export function resolveDestination(
   }
 }
 
+/**
+ * The ID of a pickup's family-wide offer (4.4 #2, #4). Each pickup has at most one of each, so the ID is fixed, and a
+ * card that still carries it is known to be a request or routine card even after the pickup moved on to a handoff.
+ */
+export function familyOfferId(pickupId: string, origin: "request" | "routine"): string {
+  return `${pickupId}:${origin}`;
+}
+
+function isFamilyOfferId(pickupId: string, offerId: string): boolean {
+  return offerId === familyOfferId(pickupId, "request") || offerId === familyOfferId(pickupId, "routine");
+}
+
 /** The family-wide offer of an open routine occurrence (4.4 #4): it lasts until wanted_at, and at least 10 minutes. */
 export function routineFamilyOffer(pickup: Pick<Pickup, "id" | "wantedAt">, now: number): PickupOffer {
   return {
-    id: `${pickup.id}:routine`, status: "pending", fromMemberId: null, toMemberId: null,
+    id: familyOfferId(pickup.id, "routine"), status: "pending", fromMemberId: null, toMemberId: null,
     expiresAt: Math.max(pickup.wantedAt, now + 10 * minute), declinedBy: [],
   };
 }
@@ -334,13 +350,18 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       ? ok() : fail("STALE_VERSION");
   }
 
-  // V-03, 4.5: a car that pressed "출발하고 안내" on a request or routine card (no offer ID) and lost the race hears who
-  // took it, whatever version its card showed, as accept does. It writes nothing. The trip's own car is never told
-  // this, even after its driver changed (8.3.1: it reopens guidance). From a handoff card the usual checks apply.
+  // V-03, 4.5: a car that pressed "출발하고 안내" on a request or routine card and lost the race hears who took it,
+  // whatever version its card showed, as accept does. It writes nothing. Such a card sends no offer ID or the ID of the
+  // family-wide offer, which has no sender; only a handoff card (an offer with a sender) takes the 8.3.1 handoff path.
+  // The trip's own car is never told this, even after its driver changed (8.3.1: it reopens guidance).
   const heldByOther = (pickup.status === "assigned" || pickup.status === "en_route" || pickup.status === "arrived") &&
     pickup.assigneeId !== memberId;
-  if (action.type === "vehicle_start" && actor.kind === "vehicle" && action.offerId === undefined && !isAssignee && heldByOther) {
-    return fail("ALREADY_TAKEN");
+  const taken = (): PickupResult => ({ ok: false, code: "ALREADY_TAKEN", pickup, events: [], by: pickup.assigneeId ?? undefined });
+  if (action.type === "vehicle_start" && actor.kind === "vehicle" && !isAssignee && heldByOther) {
+    const cardOffer = action.offerId === undefined ? null : action.offerId === offer?.id ? offer : undefined;
+    const familyWide = cardOffer === null || cardOffer?.fromMemberId === null ||
+      (cardOffer === undefined && isFamilyOfferId(pickup.id, action.offerId!));
+    if (familyWide) return taken();
   }
 
   if ("expectedVersion" in action && action.expectedVersion !== pickup.version) return fail("STALE_VERSION");
@@ -377,7 +398,7 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (!isDriver) return fail("FORBIDDEN");
       if (pickup.status === "open" && now >= pickup.wantedAt + 60 * minute) return fail("PICKUP_EXPIRED", expire(), "expired");
       if ((pickup.status === "assigned" || pickup.status === "en_route" || pickup.status === "arrived") &&
-          pickup.assigneeId !== member.id) return fail("ALREADY_TAKEN");
+          pickup.assigneeId !== member.id) return taken();
       if (pickup.status !== "open" && pickup.status !== "assigned") return fail("INVALID_STATE");
       const vehicleId = getVehicleId(action.vehicleId);
       if (vehicleId === undefined) return fail("VALIDATION");

@@ -75,7 +75,7 @@ export function expectationErrors(outcome: Outcome, expect: Expect, side: Side):
     mismatch("code", expect.code, outcome.ok ? "ok" : outcome.code);
   }
   const scalars = [
-    "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed", "destinationRevision",
+    "by", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed", "destinationRevision",
     "customized", "announced", "navSession", "newNavSession", "pickupCount",
   ] as const;
   for (const field of scalars) {

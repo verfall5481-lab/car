@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   applyPickupAction,
   canRequestPickup,
+  familyOfferId,
   requestRecipients,
   resolveDestination,
+  routineFamilyOffer,
 } from "../src/index.ts";
 import type { Actor, Member, Pickup, PickupAction, PickupContext, PickupResult, Vehicle } from "../src/index.ts";
 
@@ -302,6 +304,36 @@ test("as in SQL, a car acts only on its trip, an open pickup, its driver's assig
   // A car whose driver cannot drive acts on nothing it is not assigned to.
   const passengerCar = { kind: "vehicle", id: "passenger-car", driverId: "passenger", parked: true } as const;
   rejected(act(pickup(), passengerCar, { type: "accept" }), "NOT_FOUND");
+});
+
+test("V-03, 4.5: a request or routine card's family-wide offer ID counts as no offer ID for a car that lost the race", () => {
+  // The request offer travels on the request card. Mom took the request; dad's car starts from its old card.
+  const taken = successful(act(pickup(), mom, { type: "accept" }));
+  const start = { type: "vehicle_start", expectedVersion: 1, actionId: "a", sessionId: "s", offerId: "request-offer" } as const;
+  const result = act(taken, car, start);
+  assert.equal(result.ok ? "ok" : result.code, "ALREADY_TAKEN");
+  assert.equal(result.ok ? undefined : result.by, mom.id);
+  assert.equal(result.pickup, taken);
+  assert.deepEqual(result.events, []);
+  // The same from an announced open routine card, and from a card that still carries the family-wide offer's ID after
+  // the pickup moved on to a handoff.
+  const announced = pickup({ id: "r", source: "routine", offer: routineFamilyOffer({ id: "r", wantedAt: now }, now) });
+  const routineTaken = successful(act(announced, mom, { type: "accept" }));
+  rejected(act(routineTaken, car, { ...start, offerId: familyOfferId("r", "routine") }), "ALREADY_TAKEN");
+  const handedOff = successful(act(taken, mom, { type: "offer", expectedVersion: 2, offerId: "h", toMemberId: "grandpa" },
+    { ...context, members: [...members, { id: "grandpa", familyId, canDrive: true, canRequest: true }] }));
+  const asRequestCard = act(handedOff, car, { ...start, offerId: familyOfferId("pickup", "request") });
+  assert.equal(asRequestCard.ok ? "ok" : asRequestCard.code, "ALREADY_TAKEN");
+  // A real handoff offer ID takes the handoff path: not valid for this driver, or a stale card.
+  rejected(act(handedOff, car, { ...start, expectedVersion: 2, offerId: "h" }), "NO_VALID_OFFER");
+  rejected(act(handedOff, car, { ...start, offerId: "h" }), "STALE_VERSION");
+  // On an open request the request offer ID changes nothing: the car accepts and departs.
+  const started = successful(act(pickup(), car, start));
+  assert.equal(started.status, "en_route");
+  assert.equal(started.offer?.status, "accepted");
+  // accept says who holds the trip as well.
+  const accepted = act(taken, dad, { type: "accept" });
+  assert.equal(accepted.ok ? undefined : accepted.by, mom.id);
 });
 
 test("8.3.1 order: a moving car on another trip is refused before the 15-minute rule", () => {

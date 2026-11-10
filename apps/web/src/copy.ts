@@ -231,6 +231,7 @@ export const copy = {
   mapLabel: '예시 지도',
   mapArea: '역삼동 근처',
   mapAcc: '정확도 약 220m',
+  mapAccuracy: (metres: number) => `정확도 약 ${metres}m`,
   mapNote: '타는 곳 메모 (선택)',
   mapPlaceholder: '어디에서 탈지 적어줘',
   mapNoteOptions: ['정문', '후문', '편의점 앞'],

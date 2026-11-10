@@ -250,13 +250,15 @@ export function VehicleScreen({ state, operations, simulator }: { state: DemoSta
     </aside>
   );
   if (mapPickup) {
+    // The demo shows its example accuracy; live mode shows the server's value only when it has one.
+    const accuracy = operations.live ? model.accuracyM(mapPickup) : null;
     view = (
       <div className="vehicle-location">
         <MapPreview coords={mapPickup.destination} uncertain live={operations.live} />
         <div className="vehicle-main">
           <h2>{copy.confirmLocation}</h2>
           <p>{mapPickup.destination.label}</p>
-          <small>{copy.mapAcc}</small>
+          {operations.live ? accuracy != null && <small>{copy.mapAccuracy(accuracy)}</small> : <small>{copy.mapAcc}</small>}
           <div className="vehicle-nearby">
             <h3>{copy.nearbyPlaces}</h3>
             {nearbyPlaces(state, mapPickup.destination).map(({ place, distance }) => (

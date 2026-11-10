@@ -34,6 +34,7 @@ const feedCard = pickupRow.extend({
   primary_action: z.string().nullish(),
   secondary_action: z.string().nullish(),
   required_km: z.number().nullish(),
+  accuracy_m: z.number().nullish(),
 });
 // `nav_session_id` and `destination_revision` are the car's active guidance, which a navigation callback must carry.
 const activeTrip = pickupRow.extend({
@@ -188,6 +189,7 @@ export function vehicleState(feed: VehicleFeed, sim: SimulatedVehicle, online: b
       primary: card.primary_action ?? null,
       secondary: card.secondary_action ?? null,
       requiredKm: card.required_km ?? null,
+      accuracyM: card.accuracy_m ?? null,
     };
     const sender = card.from_name ? members.find((member) => member.name === card.from_name)?.id ?? `offer-from:${card.offer_id}` : null;
     person(sender, card.from_name);

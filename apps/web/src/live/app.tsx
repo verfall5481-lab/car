@@ -140,12 +140,11 @@ export default function LiveApp() {
   </div></main>;
   if (!config) return <main className="mobile-app live-app"><MobileHeader title={copy.app} /><div className="mobile-content"><p role="alert">{copy.configUnavailable}</p></div></main>;
   if (surface === 'vehicle') {
+    // The vehicle module creates its own role client once it has loaded.
     return (
-      <RoleProvider key={surface} surface={surface} config={config}>
-        <Suspense fallback={<p className="boot-message">{copy.loading}</p>}>
-          <LiveVehicle />
-        </Suspense>
-      </RoleProvider>
+      <Suspense fallback={<p className="boot-message">{copy.loading}</p>}>
+        <LiveVehicle config={config} />
+      </Suspense>
     );
   }
   return <RoleProvider key={surface} surface={surface} config={config}><SurfacePage surface={surface} /></RoleProvider>;

@@ -347,3 +347,20 @@ test('"못 가요" sends vehicle_decline and every simulated state is uploaded a
   expect(backend.named('upsert_vehicle_state').length).toBeGreaterThanOrEqual(3);
   expectDemoUploads(backend);
 });
+
+test('offline, the car keeps the last feed on screen and disables its actions', async ({ context, page }) => {
+  const backend = new MockVehicleBackend({ hasPickup: true });
+  await stubBackend(context, backend);
+  await pair(page, backend);
+  const depart = screen(page).getByRole('button', { name: '출발하고 안내' });
+  await expect(depart).toBeEnabled();
+  await context.setOffline(true);
+  await expect(screen(page).locator('.vehicle-offline')).toHaveText('오프라인');
+  await expect(screen(page).getByRole('heading', { name: '할머니가 데리러 와 달래요' })).toBeVisible();
+  await expect(depart).toBeDisabled();
+  await expect(screen(page).getByRole('button', { name: '못 가요' })).toBeDisabled();
+  await context.setOffline(false);
+  await expect(depart).toBeEnabled();
+  await expect(screen(page).locator('.vehicle-offline')).toHaveCount(0);
+  expect(backend.calls.some((call) => call.name === 'vehicle_start_now')).toBe(false);
+});

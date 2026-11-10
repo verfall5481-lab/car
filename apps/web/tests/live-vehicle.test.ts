@@ -67,7 +67,7 @@ test('vehicle feed projection accepts the actual SQL feed and keeps the server c
   assert.equal(nameOf(state, pickup.requester.id), '할머니');
   // 23.5: the car shows the saved place, the pickup point and the rider's note.
   assert.equal(destinationLabel(state, pickup.destination), '수학학원, 후문, 후문 벤치');
-  assert.deepEqual(state.vehicleFeed?.cards[request.pickup_id], { kind: 'child_request', order: 0, primary: 'start_now', secondary: 'decline', requiredKm: 27.1 });
+  assert.deepEqual(state.vehicleFeed?.cards[request.pickup_id], { kind: 'child_request', order: 0, primary: 'start_now', secondary: 'decline', requiredKm: 27.1, accuracyM: null });
   assert.equal(pickup.offer?.fromMemberId, null);
 
   const view = vehicleView(state, serverNow, memory);
@@ -236,4 +236,17 @@ test('pairing codes are checked, the start response is decoded, and the vehicle 
 
   assert.equal(authStorageKeys.vehicle, 'deriro-vehicle-auth');
   assert.equal(new Set(Object.values(authStorageKeys)).size, 3);
+});
+
+test('an unconfirmed location carries only the accuracy the server sent', () => {
+  const unconfirmed = vehicleState(variant((data) => Object.assign(data.cards[0], {
+    location_confirmed: false, location_source: 'gps', accuracy_m: 180, primary_action: 'confirm_location',
+  })), sim, true, serverNow);
+  const pickup = unconfirmed.pickups.find((row) => row.id === request.pickup_id)!;
+  const view = vehicleView(unconfirmed, serverNow, memory);
+  assert.equal(pickup.destination.confirmed, false);
+  assert.equal(view.accuracyM(pickup), 180);
+  assert.equal(view.primary(pickup), 'start');
+  const confirmed = vehicleState(feed, sim, true, serverNow);
+  assert.equal(vehicleView(confirmed, serverNow, memory).accuracyM(confirmed.pickups.find((row) => row.id === request.pickup_id)!), null);
 });

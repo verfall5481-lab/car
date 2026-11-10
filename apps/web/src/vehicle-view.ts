@@ -123,6 +123,7 @@ export function vehicleView(state: DemoState, now: number, memory: VehicleMemory
     return action === 'start_now' || action === 'confirm_location' ? 'start' : null;
   };
   const routineOpen = (item: Pickup) => serverCard(item)?.kind === 'routine_open';
+  const accuracyM = (item: Pickup) => serverCard(item)?.accuracyM ?? null;
 
   return {
     driverId,
@@ -139,6 +140,7 @@ export function vehicleView(state: DemoState, now: number, memory: VehicleMemory
     requiredKm,
     primary,
     routineOpen,
+    accuracyM,
   };
 }
 

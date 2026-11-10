@@ -10,8 +10,9 @@ import { Button, useToast } from '../ui.tsx';
 import { VehicleScreen } from '../vehicle.tsx';
 import type { VehicleControls, VehicleOperations } from '../vehicle.tsx';
 import { dataObject, pickupActionRpc, RpcError } from './api.ts';
+import type { LiveConfig } from './api.ts';
 import { Captcha } from './captcha.tsx';
-import { describeError, useClient, useConnection, useLiveConfig, useSession } from './context.tsx';
+import { describeError, RoleProvider, useClient, useConnection, useLiveConfig, useSession } from './context.tsx';
 import {
   alertParams,
   declineParams,
@@ -87,7 +88,15 @@ function VehicleMessage({ children }: { children: ReactNode }) {
 }
 
 /** `/v/` in live mode with `VITE_LIVE_VEHICLE_SIM=true`: a real anonymous vehicle principal with simulated inputs. */
-export default function LiveVehicle() {
+export default function LiveVehicleApp({ config }: { config: LiveConfig }) {
+  return (
+    <RoleProvider surface="vehicle" config={config}>
+      <LiveVehicle />
+    </RoleProvider>
+  );
+}
+
+function LiveVehicle() {
   const session = useSession();
   useEffect(() => { document.title = `${copy.app} ${copy.simHeading}`; }, []);
   if (session === undefined) return <VehicleMessage><p>{copy.loading}</p></VehicleMessage>;

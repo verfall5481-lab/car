@@ -18,6 +18,8 @@ export type VehicleCardFacts = {
   primary: string | null;
   secondary: string | null;
   requiredKm: number | null;
+  /** GPS accuracy of an unconfirmed location, when the server has it. */
+  accuracyM: number | null;
 };
 /** V-07 warning from the live feed. The server returns it only while parked and short of range. */
 export type VehicleAlertFacts = { id: string; requiredKm: number; rangeKm: number; pickupCount: number };

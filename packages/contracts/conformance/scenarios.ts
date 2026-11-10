@@ -583,7 +583,7 @@ export const scenarios: readonly Scenario[] = [
         },
       },
       {
-        actor: "dad", do: { type: "respond", response: "accept" }, divergence: { demo: "demo-has-no-family-offers" },
+        actor: "dad", do: { type: "respond", response: "accept" },
         expect: { status: "assigned", assignee: "dad", resolved: { from: null, status: "accepted", by: "dad" }, events: ["offer_accepted"] },
       },
     ],
@@ -683,7 +683,10 @@ export const scenarios: readonly Scenario[] = [
         actor: "system", do: { type: "sweep" }, divergence: { spec: "demo-scheduler-has-no-routine-offer" },
         expect: { status: "open", offer: { from: null, to: null, expiresInMin: 15 } },
       },
-      { actor: "dad", do: { type: "accept" }, expect: { assignee: "dad", events: ["accepted"] } },
+      {
+        actor: "dad", do: { type: "accept" }, divergence: { spec: "demo-scheduler-has-no-routine-offer" },
+        expect: { assignee: "dad", resolved: { from: null, status: "accepted", by: "dad" }, events: ["accepted"] },
+      },
     ],
   },
 ];

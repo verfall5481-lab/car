@@ -86,6 +86,8 @@ export type Pickup = {
   notMetAt: number | null;
   arrivedAt?: number | null;
   enRouteAt?: number | null;
+  /** A routine occurrence's `notify_before_min`, which bounds a handoff's expiry (F-11). Absent means 20. */
+  notifyBeforeMin?: number | null;
 };
 
 export type Actor =
@@ -291,6 +293,15 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
   if (actor.kind === "system" && action.type !== "expire" && action.type !== "close_unconfirmed") {
     return fail("FORBIDDEN");
   }
+  // As in SQL, a car acts only on its own trip, an open pickup, its driver's assignment or an offer to its driver.
+  // Anything else is NOT_FOUND, except that a car that lost the race still learns why (F-10, 8.3.1).
+  if (actor.kind === "vehicle" && !isAssignee) {
+    if (!isDriver) return fail("NOT_FOUND");
+    const visible = pickup.status === "open" ||
+      (pickup.status === "assigned" && pickup.assigneeId === member.id) ||
+      (offer?.status === "pending" && isOfferTarget(offer));
+    if (!visible && action.type !== "accept" && action.type !== "vehicle_start") return fail("NOT_FOUND");
+  }
 
   if (action.type === "accept" && isDriver && member.id === pickup.assigneeId && pickup.acceptedAt !== null &&
       isActivePickup(pickup) && (actor.kind !== "vehicle" || isAssignee)) return ok();
@@ -361,9 +372,11 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (actor.kind === "vehicle" && (action.toMemberId != null || action.note != null)) return fail("FORBIDDEN");
       if (pickup.status !== "assigned") return fail("INVALID_STATE");
       if (action.toMemberId === memberId) return fail("CANNOT_ACCEPT_OWN_OFFER");
-      if ((action.toMemberId && !recipients.includes(action.toMemberId)) || (action.note?.length ?? 0) > 40) return fail("VALIDATION");
+      // As offer_pickup: a target who is not an eligible driver is not found; an over-long note is malformed input.
+      if (action.toMemberId && !recipients.includes(action.toMemberId)) return fail("NOT_FOUND");
+      if ((action.note?.length ?? 0) > 40) return fail("VALIDATION");
       if (offer?.id === action.offerId && offer.status === "pending") return ok();
-      const limit = Math.min(now + 10 * minute, pickup.wantedAt - 20 * minute);
+      const limit = Math.min(now + 10 * minute, pickup.wantedAt - (pickup.notifyBeforeMin ?? 20) * minute);
       return ok({ ...pickup, offer: { id: action.offerId, status: "pending", fromMemberId: memberId,
         toMemberId: action.toMemberId ?? null, expiresAt: limit > now ? limit : now + 5 * minute,
         note: action.note, declinedBy: [] } }, "offered");
@@ -417,8 +430,9 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (actor.kind !== "vehicle" || !isDriver) return fail("FORBIDDEN");
       if (pickup.status === "open" && now >= pickup.wantedAt + 60 * minute) return fail("PICKUP_EXPIRED", expire(), "expired");
       if (!pickup.destination.confirmed) return fail("LOCATION_UNCONFIRMED");
-      if (pickup.wantedAt > now + 15 * minute && pickup.status === "open") return fail("INVALID_STATE");
+      // A moving car cannot switch guidance (8.3.1); that refusal comes before the 15-minute rule, as in SQL.
       if (vehicle?.activePickupId && vehicle.activePickupId !== pickup.id && !actor.parked) return fail("FORBIDDEN");
+      if (pickup.wantedAt > now + 15 * minute && pickup.status === "open") return fail("INVALID_STATE");
       const navigation = { sessionId: action.sessionId, destinationRevision: pickup.destinationRevision, actionId: action.actionId };
       if (pickup.status === "en_route" && isAssignee) {
         return ok({ ...pickup, navigation }, "navigation_requested");
@@ -476,11 +490,19 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       return ok(update({ destination: { ...action.destination, confirmed: true },
         destinationRevision: pickup.destinationRevision + Number(changed) }), "location_confirmed");
     }
-    case "ready":
+    case "ready": {
       if (!isRequester) return fail("FORBIDDEN");
       if (pickup.source !== "routine" || (pickup.status !== "open" && pickup.status !== "assigned")) return fail("INVALID_STATE");
       if (pickup.readyAt !== null) return ok();
-      return ok(update({ readyAt: now }), "rider_ready");
+      // 4.3 #16, F-15: an occurrence nobody has taken is offered to every driver, unless it already had an offer.
+      const familyOffer: PickupOffer | null = pickup.status === "open" && offer === null
+        ? {
+          id: `${pickup.id}:ready`, status: "pending", fromMemberId: null, toMemberId: null,
+          expiresAt: Math.max(pickup.wantedAt, now + 10 * minute), declinedBy: [],
+        }
+        : offer;
+      return ok(update({ readyAt: now, offer: familyOffer }), "rider_ready");
+    }
     case "not_met":
       if (!isRequester) return fail("FORBIDDEN");
       if (pickup.status !== "arrived") return fail("INVALID_STATE");

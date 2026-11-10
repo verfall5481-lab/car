@@ -236,6 +236,69 @@ test("4.4 #5/#9: the default assignee confirming a trip they offered away withdr
   assert.equal(taken.offer?.acceptedBy, mom.id);
 });
 
+test("F-11: a handoff expires at min(now + 10 min, wanted_at - the routine's notify_before_min), 20 by default", () => {
+  const occurrence = pickup({
+    source: "routine", status: "assigned", assigneeId: mom.id, acceptedAt: now, offer: null,
+    wantedAt: now + 50 * 60_000, notifyBeforeMin: 45,
+  });
+  const offer = { type: "offer", expectedVersion: 1, offerId: "o", toMemberId: dad.id } as const;
+  assert.equal(successful(act(occurrence, mom, offer)).offer?.expiresAt, now + 5 * 60_000);
+  assert.equal(successful(act({ ...occurrence, notifyBeforeMin: undefined }, mom, offer)).offer?.expiresAt, now + 10 * 60_000);
+});
+
+test("a handoff target that cannot drive is NOT_FOUND, as offer_pickup returns; a long note is VALIDATION", () => {
+  const assigned = pickup({ status: "assigned", assigneeId: mom.id, acceptedAt: now, offer: null, version: 2 });
+  rejected(act(assigned, mom, { type: "offer", expectedVersion: 2, offerId: "o", toMemberId: "passenger" }), "NOT_FOUND");
+  rejected(act(assigned, mom, { type: "offer", expectedVersion: 2, offerId: "o", toMemberId: dad.id, note: "가".repeat(41) }),
+    "VALIDATION");
+});
+
+test("4.3 #16: ready early on an open occurrence offers it to every driver once; an assigned one gets no offer", () => {
+  const open = pickup({ source: "routine", status: "open", offer: null, wantedAt: now + 30 * 60_000 });
+  const result = act(open, rider, { type: "ready", expectedVersion: 1 });
+  const ready = successful(result);
+  assert.deepEqual(result.events, ["rider_ready"]);
+  assert.equal(ready.readyAt, now);
+  assert.equal(ready.version, 2);
+  assert.equal(ready.status, "open");
+  assert.ok(ready.offer);
+  assert.deepEqual({ ...ready.offer, id: "family" }, {
+    id: "family", status: "pending", fromMemberId: null, toMemberId: null, expiresAt: now + 30 * 60_000, declinedBy: [],
+  });
+  assert.equal(successful(act(ready, rider, { type: "ready", expectedVersion: 2 })), ready);
+  const taken = successful(act(ready, dad, { type: "respond_offer", expectedVersion: 2, offerId: ready.offer.id, response: "accept" }));
+  assert.equal(taken.assigneeId, dad.id);
+  assert.equal(taken.offer?.status, "accepted");
+  const soon = successful(act({ ...open, wantedAt: now + 5 * 60_000 }, rider, { type: "ready", expectedVersion: 1 }));
+  assert.equal(soon.offer?.expiresAt, now + 10 * 60_000);
+  const assigned = pickup({ source: "routine", status: "assigned", assigneeId: dad.id, offer: null });
+  assert.equal(successful(act(assigned, rider, { type: "ready", expectedVersion: 1 })).offer, null);
+});
+
+test("as in SQL, a car acts only on its trip, an open pickup, its driver's assignment or an offer to its driver", () => {
+  const moms = pickup({ status: "en_route", assigneeId: mom.id, vehicleId: null, acceptedAt: now, offer: null, version: 3 });
+  const parkedCar = { ...car, parked: true };
+  const moved = { ...moms.destination, lng: 127.1 };
+  rejected(act(moms, parkedCar, { type: "confirm_location", expectedVersion: 3, destination: moved }), "NOT_FOUND");
+  rejected(act(moms, parkedCar, { type: "arrive", source: "manual", expectedVersion: 3 }), "NOT_FOUND");
+  rejected(act({ ...moms, status: "arrived" }, parkedCar, { type: "board", expectedVersion: 3 }), "NOT_FOUND");
+  // F-10 and 8.3.1 still name the outcome for a car that lost the race.
+  rejected(act(moms, car, { type: "accept" }), "ALREADY_TAKEN");
+  rejected(act({ ...moms, status: "assigned" }, car, { type: "vehicle_start", expectedVersion: 3, actionId: "a", sessionId: "s" }),
+    "NO_VALID_OFFER");
+  // A car whose driver cannot drive acts on nothing it is not assigned to.
+  const passengerCar = { kind: "vehicle", id: "passenger-car", driverId: "passenger", parked: true } as const;
+  rejected(act(pickup(), passengerCar, { type: "accept" }), "NOT_FOUND");
+});
+
+test("8.3.1 order: a moving car on another trip is refused before the 15-minute rule", () => {
+  const later = pickup({ id: "later", wantedAt: now + 30 * 60_000 });
+  const busy = { ...context, vehicles: [{ ...vehicles[0], activePickupId: "other", activeSessionId: "s", activeDestinationRevision: 1 }] };
+  const start = { type: "vehicle_start", expectedVersion: 1, actionId: "a", sessionId: "s2" } as const;
+  rejected(act(later, car, start, busy), "FORBIDDEN");
+  rejected(act(later, { ...car, parked: true }, start, busy), "INVALID_STATE");
+});
+
 test("permission parity with SQL: lost can_drive keeps handoff, blocks departure; a car offers only to everyone", () => {
   const held = pickup({ status: "assigned", assigneeId: "passenger", acceptedAt: now, offer: null, version: 2 });
   rejected(act(held, { kind: "member", id: "passenger" }, { type: "depart", expectedVersion: 2 }), "FORBIDDEN");

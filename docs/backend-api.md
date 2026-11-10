@@ -75,6 +75,8 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 - `vehicle_start_now`는 `pickup_id`, `expected_version`, `action_id`, `offer_id?`를 받고 `pickup`, `dest`, `nav_session_id`, `destination_revision`을 돌려준다. `mark_arrived`의 `source=manual`은 `expected_version`, `source=nav_callback`은 `nav_session_id`와 `destination_revision`을 사용한다. `report_nav_result`는 `pickup_id`, `nav_session_id`, `result`, `error_code?`를 받는다.
 - 보호자 취소 사유에는 `resolved_by_phone`, `mistake`, `other_way_home`, `other`를 사용한다. 도착한 픽업은 `not_met`으로 취소할 수 있다. 루틴 건너뛰기는 `skipped`로 기록된다.
 - 차량이 `offer_pickup`을 부르면 `to_member_id`와 `note` 없이 가족 전체에게만 넘길 수 있고, 둘 중 하나라도 있으면 `FORBIDDEN`이다. 차량 앱은 `vehicle_decline`을 쓴다.
+- 차량은 자기 픽업, `open` 픽업, 운전자가 맡은 픽업, 운전자에게 온 제안에만 동작한다. 그 밖의 픽업은 `NOT_FOUND`다. 다만 운전자가 운전할 수 있고 요청자가 아니면, 다른 사람이 먼저 맡은 픽업에 부른 `accept_pickup`은 `ALREADY_TAKEN`(`detail.by`=맡은 사람의 호칭)을 받는다. `vehicle_start_now`는 그 픽업이 `assigned`이고 운전자에게 유효한 제안이 없으면 `NO_VALID_OFFER`, 이미 출발했거나 도착했으면 `INVALID_STATE`를 받는다(8.3.1). 도착, 탑승 확인, 위치 확인, 출발 되돌리기, 내비 결과는 그대로 `NOT_FOUND`다. 다른 가족의 픽업 ID는 존재하지 않는 ID와 같은 응답을 받는다.
+- 열린 요청에 `vehicle_decline`을 부를 때, 아직 거절하지 않은 운전 가능 보호자가 그 차의 운전자뿐이면 요청 제안은 `declined`로 닫힌다(`resolved_by_member_id`=그 운전자). `respond_offer(decline)`과 같은 규칙이다(4.4 #7). 요청 제안에는 보낸 사람이 없으므로 두 경로 모두 거절 알림을 보내지 않는다. 요청은 `open`으로 남고, 거절한 사람도 나중에 직접 수락할 수 있다.
 - `register_push_subscription`은 `endpoint`, `p256dh`, `auth`를 받고 `unregister_push_subscription`은 `endpoint`를 받는다. 다른 계정이 등록한 엔드포인트는 등록하면 `FORBIDDEN`이고, 해지는 자기 구독만 지우며 없어도 성공한다. `enqueue_test_push`는 인자 없이 호출한다.
 - GPS 요청의 "OO동 근처" 라벨은 발송 워커가 비동기로 채운다. 표시용 라벨이라 `version`과 `destination_revision`을 올리지 않으므로, 라벨이 바뀌어도 클라이언트가 가진 `expected_version`은 그대로 유효하다. 가족 피드 변경 알림으로 새 라벨을 다시 읽는다.
 

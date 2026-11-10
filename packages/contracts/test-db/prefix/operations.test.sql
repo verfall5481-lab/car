@@ -8,7 +8,8 @@ select no_plan();
 create temp table step(name text primary key,value jsonb);
 grant select,insert on step to authenticated;
 insert into auth.users(id,is_anonymous) values
-  ('60000000-0000-4000-8000-000000000001',false),('60000000-0000-4000-8000-000000000003',true);
+  ('60000000-0000-4000-8000-000000000001',false),('60000000-0000-4000-8000-000000000003',true),
+  ('60000000-0000-4000-8000-000000000004',true);
 
 set local role authenticated;
 set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000001';
@@ -49,6 +50,18 @@ set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000003';
 select is(public.upsert_vehicle_state('P',now(),100,p_lat=>37.5,p_lng=>127,p_location_at=>now())->>'ok','true',
   'operations: store telemetry and recompute range');
 select is(public.vehicle_get_feed()->>'ok','true','operations: read the vehicle feed');
+
+set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000001';
+insert into step select 'rider_code',public.create_rider_invite((value#>>'{data,rider,id}')::uuid) from step where name='rider';
+set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000004';
+select is(public.claim_rider_invite(value#>>'{data,code}')->>'ok','true','account_linking: link a rider device') from step where name='rider_code';
+insert into step values ('request',public.rider_create_request(p_place_id=>(select value#>>'{data,place,id}' from step where name='home')::uuid));
+set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000003';
+select is(public.vehicle_decline((value#>>'{data,pickup,id}')::uuid,(value#>>'{data,pickup,version}')::int)->>'ok','true',
+  'operations: the only driver''s car declines a request') from step where name='request';
+reset role;
+select is((select o.status::text from public.pickup_offers o join step s on s.name='request'
+  and o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid),'declined','operations: the last refusal declines the request offer');
 
 reset role;
 select * from finish();

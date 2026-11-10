@@ -105,7 +105,7 @@ export function GuardianLogin() {
         {error && <p role="alert" className="danger-text">{error}</p>}
         {captchaKey && (!codeStep || time >= resendAt) && <Captcha key={captchaRevision} siteKey={captchaKey} receive={setCaptcha} />}
         <Button type="submit" disabled={loading || (codeStep ? token.length !== 6 : !email.trim() || Boolean(captchaKey && !captcha))}>{loading ? copy.loading : codeStep ? copy.confirm : copy.getOtp}</Button>
-        {codeStep ? <><Button variant="secondary" disabled={loading || time < resendAt || Boolean(captchaKey && !captcha)} onClick={() => { void send(); }}>{copy.resend}{time < resendAt ? ` (${Math.ceil((resendAt - time) / 1000)}초)` : ''}</Button><Button variant="plain" onClick={() => { setToken(''); setCodeStep(false); setError(''); }}>{copy.changeEmail}</Button></> :
+        {codeStep ? <><Button variant="secondary" disabled={loading || time < resendAt || Boolean(captchaKey && !captcha)} onClick={() => { void send(); }}>{copy.resend}{time < resendAt ? copy.resendWait(Math.ceil((resendAt - time) / 1000)) : ''}</Button><Button variant="plain" onClick={() => { setToken(''); setCodeStep(false); setError(''); }}>{copy.changeEmail}</Button></> :
           <>{kakaoLogin && <Button variant="amber" disabled={loading} onClick={() => { void startKakao(); }}>{copy.loginKakao}</Button>}<div className="guardian-account-help"><Smartphone size={26} /><div><p>{copy.addHome}</p><Link to="/p/install">{copy.installHelp}</Link></div></div></>}
       </form>}
   </div></>;

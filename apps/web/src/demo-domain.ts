@@ -10,9 +10,23 @@ export type PairCode = { code: string; expiresAt: number };
 export type DemoVehicle = Vehicle & { name: string; range: number | null; rangeCollectedAt?: number | null; rangeStale?: boolean; isDemoValue?: boolean; parked: boolean; online: boolean; navFails: boolean; navError: boolean;
   /** F-05: set while the car is not connected to a family; the car shows V-01 and receives no cards. */
   revokedAt?: number | null; pairing?: PairCode | null };
+/** One card of the live vehicle feed (8.4), as the server decided it. */
+export type VehicleCardFacts = {
+  kind: string;
+  /** Position in the server's priority order. */
+  order: number;
+  primary: string | null;
+  secondary: string | null;
+  requiredKm: number | null;
+};
+/** V-07 warning from the live feed. The server returns it only while parked and short of range. */
+export type VehicleAlertFacts = { id: string; requiredKm: number; rangeKm: number; pickupCount: number };
+/** Live `/v/` only. The demo derives cards from its own data; the live feed already decided them. */
+export type VehicleFeedFacts = { cards: Record<string, VehicleCardFacts>; alert: VehicleAlertFacts | null };
 export type DemoState = {
   schema: 1; startedAt: number; advance: number; familyName: string; live?: boolean; vehicles?: DemoVehicle[]; terminalAt?: Record<string, number>; departureAt?: Record<string, number>;
   pickupCapabilities?: Record<string, { cancel?: boolean; notMet?: boolean; ready?: boolean; escalation?: number; coordinates?: boolean }>;
+  vehicleFeed?: VehicleFeedFacts;
   smsFailures?: number;
   members: Person[]; riders: Rider[]; places: DemoPlace[]; points: PickupPoint[]; routines: Routine[];
   pickups: Pickup[]; occurrences: Record<string, string>; history: History[]; vehicle: DemoVehicle;

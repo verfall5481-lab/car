@@ -1,7 +1,7 @@
 import { dataObject, RpcError } from './api.ts';
 import type { RoleClient, Surface } from './api.ts';
 
-export const scopeOf = (role: Surface) => role === 'guardian' ? '/p/' : '/c/';
+export const scopeOf = (role: Surface) => role === 'guardian' ? '/p/' : role === 'rider' ? '/c/' : '/v/';
 
 export function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);

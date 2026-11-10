@@ -1,7 +1,9 @@
 const timeFormat = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const dateFormat = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric', weekday: 'long' });
+const secondFormat = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 
 export const clock = (value: number) => timeFormat.format(value);
+export const clockSeconds = (value: number) => secondFormat.format(value);
 export const dateLabel = (value: number) => dateFormat.format(value);
 
 export function subject(name: string) {
@@ -115,6 +117,7 @@ export const copy = {
   otpTitle: '인증 코드 입력',
   otpDescription: '이메일로 보낸 숫자 6개를 입력해 주세요.',
   resend: '인증 코드 다시 보내기',
+  resendWait: (seconds: number) => ` (${seconds}초)`,
   changeEmail: '이메일 바꾸기',
   setupFamily: '가족을 만들어요',
   setupChecklist: '가족 픽업 준비하기',
@@ -513,6 +516,38 @@ export const copy = {
   carIgnoredCallback: '이전 안내 콜백을 무시했어요.',
   carAcknowledged: '확인했어요.',
   carOfflineError: '연결 상태를 확인해 주세요.',
+  carSimTitle: '웹 차량 시뮬레이터 · 실제 서버 연결',
+  carSimNavRequested: '안내를 요청했어요. 아래 시뮬레이터에서 안내 결과를 보내 주세요.',
+  carOfflineLiveHint: '마지막으로 받은 정보를 보여줘요.',
+  carPairPrompt: '연결 코드를 만들어 주세요.',
+  carPairCreate: '연결 코드 만들기',
+  carPaired: (family: string) => `${family}에 연결됐어요.`,
+  carLinkLost: '차 연결이 해제됐어요. 새 코드로 다시 연결해 주세요.',
+  carParkRequired: '차를 세우고 다시 시도해 주세요.',
+  carRoutineOpen: '담당을 정할 시간이에요',
+  rangePickups: (count: number) => `픽업 ${count}건 기준, 추정치예요`,
+  simHeading: '웹 차량 시뮬레이터',
+  simLiveBadge: '실제 서버 세션',
+  simNotice: '실제 서버에 차량으로 연결해 동작해요. 기어와 주행가능거리는 데모 값으로 보내고, 내비 안내와 도착 콜백은 시뮬레이션이에요. 실제 차량이나 내비와 연결되지 않아요.',
+  simGear: '기어',
+  simParked: '주차 (P)',
+  simDriving: '주행 (D)',
+  simUpload: '마지막 업로드',
+  simUploadNone: '아직 보내지 않았어요',
+  simUploadFailed: '보내지 못했어요. 다음 주기에 다시 보내요.',
+  simUploadValue: (gear: string, km: number, time: string) => `${gear} · ${km}km · 데모 값 · ${time}`,
+  simNav: '내비 안내 결과 (시뮬레이션)',
+  simNavIdle: '안내 중인 픽업이 없어요',
+  simNavWaiting: '안내 결과를 기다리고 있어요',
+  simNavOk: '안내 성공',
+  simNavFail: '안내 실패',
+  simNavRecordedOk: '안내 성공으로 기록됐어요',
+  simNavRecordedFailed: '안내 실패로 기록됐어요',
+  simSession: (id: string, revision: number) => `안내 세션 ${id.slice(0, 8)} · 목적지 버전 ${revision}`,
+  simArrival: '도착 콜백 (시뮬레이션)',
+  simArrivalApplied: '도착 콜백을 반영했어요.',
+  simPairLink: '보호자 화면에서 연결 열기',
+  simRefresh: '피드 새로고침',
   genericError: '다시 확인하고 시도해 주세요.',
   stale: '픽업 상태가 바뀌었어요. 새 상태를 확인해 주세요.',
   restricted: '이 화면에서 할 수 없는 동작이에요.',

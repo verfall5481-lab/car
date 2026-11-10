@@ -80,6 +80,9 @@ const errorText: Record<string, string> = {
   OTP_INVALID: copy.otpInvalid, OTP_SEND: copy.otpSendError, PUSH_UNAVAILABLE: copy.pushUnavailable, PUSH_DENIED: copy.pushDenied,
   PUSH_INSTALL: copy.pushInstall, PUSH_NOT_CONFIGURED: copy.pushNotConfigured,
   CAPTCHA_REQUIRED: copy.captchaError, DEVICE_LIMIT: copy.deviceLimit,
+  PAIR_CODE_INVALID: copy.pairWrongCode, PAIR_CODE_EXPIRED: copy.pairCodeExpired,
+  CANNOT_ACCEPT_OWN_OFFER: copy.restricted, ALREADY_EN_ROUTE: copy.stale,
+  VEHICLE_BUSY: copy.busyVehicle, PARK_REQUIRED: copy.carParkRequired, NOT_VEHICLE: copy.carLinkLost, VEHICLE_REVOKED: copy.carLinkLost,
 };
 export function describeError(error: unknown) {
   return error instanceof RpcError ? errorText[error.code] ?? copy.genericError : copy.genericError;

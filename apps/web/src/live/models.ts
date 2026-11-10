@@ -78,12 +78,14 @@ export function mapMember(row: z.infer<typeof memberRow>, familyId: string): Per
   return { id: row.id, familyId, name: row.display_name, canDrive: row.can_drive, canRequest: row.can_request, leftAt: date(row.left_at), phone: row.phone_e164 ?? undefined };
 }
 
-function mapOffer(row: z.infer<typeof offerRow>): PickupOffer {
+// `resolved_by_member_id` names whoever closed the offer: the acceptor, but also whoever declined or withdrew it.
+export function mapOffer(row: z.infer<typeof offerRow>): PickupOffer {
+  const acceptedBy = row.status === 'accepted' ? row.resolved_by_member_id ?? undefined : undefined;
   return { id: row.id, fromMemberId: row.from_member_id ?? null, toMemberId: row.to_member_id ?? null, expiresAt: Date.parse(row.expires_at),
-    status: row.status, note: row.note ?? undefined, declinedBy: row.declined_by ?? [], acceptedBy: row.resolved_by_member_id ?? undefined };
+    status: row.status, note: row.note ?? undefined, declinedBy: row.declined_by ?? [], acceptedBy };
 }
 
-function mapPickup(row: z.infer<typeof pickupRow>, familyId: string, requesterId?: string, offers: z.infer<typeof offerRow>[] = []): Pickup {
+export function mapPickup(row: z.infer<typeof pickupRow>, familyId: string, requesterId?: string, offers: z.infer<typeof offerRow>[] = []): Pickup {
   const offer = row.offer ?? [...(row.offers ?? []), ...offers].filter((item) => item.pickup_id === row.id || item.pickup_id == null)
     .sort((a, b) => Number(b.status === 'pending') - Number(a.status === 'pending') || Date.parse(b.expires_at) - Date.parse(a.expires_at))[0];
   return {
@@ -105,20 +107,20 @@ function mapVehicle(row: VehicleRow, familyId: string): DemoVehicle {
     parked: false, online: true, navFails: false, navError: false };
 }
 
-function toPlaces(rows: z.infer<typeof placeRow>[], familyId: string) {
+export function toPlaces(rows: z.infer<typeof placeRow>[], familyId: string) {
   return rows.map((row) => ({ id: row.id, familyId, label: row.label, kind: row.kind ?? 'other', lat: row.lat, lng: row.lng, radiusM: row.radius_m, archivedAt: date(row.archived_at) }));
 }
 function toPoints(rows: z.infer<typeof pointRow>[], familyId: string) {
   return rows.map((row) => ({ id: row.id, familyId, placeId: row.place_id, label: row.label, lat: row.lat, lng: row.lng, note: row.note ?? undefined, archivedAt: date(row.archived_at) }));
 }
 
-function baseState(now = Date.now()): DemoState {
+export function baseState(now = Date.now()): DemoState {
   return { schema: 1, startedAt: now, advance: 0, live: true, familyName: '', members: [], riders: [], places: [], points: [], routines: [], pickups: [], occurrences: {}, history: [],
     vehicle: { id: '', familyId: '', name: '', currentDriverId: null, range: null, parked: false, online: false, navFails: false, navError: false },
     vehicles: [], invite: { code: '', riderId: '', expiresAt: 0, used: true }, notifications: false, sms: false };
 }
 
-function terminalTimes(rows: z.infer<typeof pickupRow>[]) {
+export function terminalTimes(rows: z.infer<typeof pickupRow>[]) {
   return Object.fromEntries(rows.flatMap((row) => {
     const at = date(row.completed_at ?? row.cancelled_at ?? row.expired_at ?? row.closed_unconfirmed_at);
     return at == null ? [] : [[row.id, at]];

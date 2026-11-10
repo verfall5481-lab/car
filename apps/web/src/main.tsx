@@ -8,7 +8,7 @@ import { DemoNav, GuardianTabs, ToastContext } from './ui.tsx';
 import { RiderInfo, RiderInstall, RiderLink, RiderRequest } from './rider.tsx';
 import { GuardianHome, GuardianNotifications, PickupDetail } from './guardian.tsx';
 import { GuardianManagement } from './management.tsx';
-import { VehicleScreen } from './vehicle.tsx';
+import { DemoVehicleScreen } from './vehicle.tsx';
 
 const LiveApp = lazy(() => import('./live/app.tsx'));
 
@@ -53,7 +53,7 @@ function App() {
 
   return <ToastContext.Provider value={showToast}>
     <DemoNav role={role} />
-    {role === 'vehicle' ? <VehicleScreen state={state} /> : <main className={`mobile-app mobile-app--${role}`}>
+    {role === 'vehicle' ? <DemoVehicleScreen state={state} /> : <main className={`mobile-app mobile-app--${role}`}>
       <Routes>
         <Route path="/" element={<Navigate to="/p/" replace />} />
         <Route path="/c" element={rider ? <RiderRequest key={rider.id} state={state} requester={{ kind: 'rider', id: rider.id }} /> : <Navigate to="/c/link" replace />} />
@@ -79,5 +79,8 @@ function App() {
 
 const isVehiclePreview = /^\/v(?:\/|$)/.test(window.location.pathname);
 const configuredMode = import.meta.env.VITE_APP_MODE;
-const liveMode = !isVehiclePreview && (configuredMode === 'live' || !configuredMode && import.meta.env.VITE_DEMO === 'false');
+const liveConfigured = configuredMode === 'live' || !configuredMode && import.meta.env.VITE_DEMO === 'false';
+// `/v/` stays the in-browser demo unless the live web vehicle simulator is switched on (SPEC 23.8).
+const liveVehicle = import.meta.env.VITE_LIVE_VEHICLE_SIM === 'true';
+const liveMode = liveConfigured && (!isVehiclePreview || liveVehicle);
 createRoot(document.getElementById('root')!).render(<BrowserRouter>{liveMode ? <Suspense fallback={<p className="boot-message" role="status">{copy.loading}</p>}><LiveApp /></Suspense> : <App />}</BrowserRouter>);

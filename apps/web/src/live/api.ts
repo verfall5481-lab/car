@@ -5,7 +5,14 @@ import { RpcError } from './errors.ts';
 
 export { RpcError } from './errors.ts';
 
-export type Surface = 'guardian' | 'rider';
+export type Surface = 'guardian' | 'rider' | 'vehicle';
+
+/** One browser origin can hold a guardian, a rider and a vehicle session at once; each keeps its own auth storage (2.1, 10.1). */
+export const authStorageKeys: Record<Surface, string> = {
+  guardian: 'deriro-parent-auth',
+  rider: 'deriro-child-auth',
+  vehicle: 'deriro-vehicle-auth',
+};
 export type LiveConfig = { url: string; publicKey: string; vapidKey?: string; mapKey?: string; captchaKey?: string; kakaoLogin?: boolean };
 
 export function publicSupabaseKey(key: string) {
@@ -48,7 +55,7 @@ export function decodeRpc<T>(input: unknown, schema: z.ZodType<T>): T {
 
 export function createRoleClient(surface: Surface, config: LiveConfig) {
   const supabase = createClient(config.url, config.publicKey, {
-    auth: { storageKey: surface === 'guardian' ? 'deriro-parent-auth' : 'deriro-child-auth', detectSessionInUrl: false, autoRefreshToken: true, persistSession: true, flowType: surface === 'guardian' && config.kakaoLogin ? 'pkce' : 'implicit' },
+    auth: { storageKey: authStorageKeys[surface], detectSessionInUrl: false, autoRefreshToken: true, persistSession: true, flowType: surface === 'guardian' && config.kakaoLogin ? 'pkce' : 'implicit' },
   });
   return {
     supabase,
@@ -102,6 +109,8 @@ export function pickupActionRpc(id: string, action: PickupAction, surface: Surfa
     case 'cancel_offer': return ['cancel_offer', { p_expected_version: action.expectedVersion, p_offer_id: action.offerId }];
     case 'take_over': return ['take_over', { ...versioned, p_vehicle_id: action.vehicleId }];
     case 'depart': return ['mark_en_route', versioned];
+    // The server issues the navigation session; the client's action ID makes a retried press idempotent (8.3.1).
+    case 'vehicle_start': return ['vehicle_start_now', { ...versioned, p_action_id: action.actionId, p_offer_id: action.offerId }];
     case 'undo_en_route': return ['undo_en_route', versioned];
     case 'arrive': return action.source === 'manual' ? ['mark_arrived', { ...versioned, p_source: action.source }] :
       ['mark_arrived', { p_pickup_id, p_source: action.source, p_nav_session_id: action.sessionId, p_destination_revision: action.destinationRevision }];

@@ -676,6 +676,10 @@ begin
         if found then
           if offer.id is not null then
             insert into public.offer_responses(family_id,offer_id,member_id) values(pickup.family_id,offer.id,actor.member_id) on conflict do nothing;
+            -- The rule respond_offer(decline) applies: the last driver to decline closes the request offer (4.4 #7, 8.7).
+            if deriro_private.everyone_declined(offer,pickup) then
+              perform deriro_private.resolve_offer(offer.id,'declined',actor.member_id);
+            end if;
           end if;
           perform deriro_private.add_event(pickup,actor,'request_declined');
         end if;

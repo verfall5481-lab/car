@@ -484,5 +484,76 @@ select is(public.accept_pickup(pg_temp.fixture(1151))#>>'{data,pickup,assignee_m
   '이모 can accept the open occurrence directly');
 reset role;
 
+-- 4.4 #7, 8.7: a request offer is declined once every eligible driver has declined, whether the last refusal comes
+-- from a phone (respond_offer) or from a car ("못 가요", vehicle_decline). Phones only, in the 루틴 가족 first.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001102';
+insert into saved values ('dad_request',public.member_create_request(p_place_id=>pg_temp.fixture(1131)));
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+select is(public.respond_offer(o.id,'decline',(s.value#>>'{data,pickup,version}')::int)#>>'{data,offer,status}','pending',
+  'one of two drivers declining keeps the request offer pending') from saved s join public.pickup_offers o
+  on o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001103';
+select is(public.respond_offer(o.id,'decline',(s.value#>>'{data,pickup,version}')::int)#>>'{data,offer,status}','declined',
+  'the last phone refusal declines it') from saved s join public.pickup_offers o
+  on o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+reset role;
+-- Then from a car in the 인계 가족: 엄마 asks, 이모 declines by phone, and 아빠's car is the last eligible driver.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+insert into saved values ('mom_request',public.member_create_request(p_place_id=>pg_temp.fixture(1031)));
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001003';
+select is(public.respond_offer(o.id,'decline',(s.value#>>'{data,pickup,version}')::int)#>>'{data,offer,status}','pending',
+  '이모 declines 엄마''s request by phone') from saved s join public.pickup_offers o
+  on o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where s.name='mom_request';
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select is(public.vehicle_decline((value#>>'{data,pickup,id}')::uuid,(value#>>'{data,pickup,version}')::int)->>'ok','true',
+  '아빠''s car says "못 가요"') from saved where name='mom_request';
+reset role;
+select is((select o.status||':'||o.resolved_by_member_id||':'||(select count(*) from public.offer_responses r where r.offer_id=o.id)
+  from public.pickup_offers o join saved s on s.name='mom_request' and o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid),
+  'declined:'||pg_temp.fixture(1012)||':2','the car''s refusal, the last one, declines the request offer like respond_offer');
+select is((select p.status||':'||(select string_agg(e.event_type||':'||e.actor_kind,',' order by e.id) from public.pickup_events e
+  where e.pickup_id=p.id and e.event_type<>'created') from public.pickups p join saved s on s.name='mom_request'
+  and p.id=(s.value#>>'{data,pickup,id}')::uuid),'open:offer_declined:guardian,request_declined:vehicle',
+  'the request stays open and each refusal is recorded');
+select is((select count(*) from public.notifications_outbox x join saved s on s.name in ('mom_request','dad_request')
+  and x.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where x.template in ('offer_declined','offer_all_declined')),0::bigint,
+  'neither path sends a sender''s decline notice for a request offer, which has no sender');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001002';
+select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{data,pickup,assignee_member_id}',pg_temp.fixture(1012)::text,
+  'a driver who declined may still accept the open request (4.3 #3)') from saved where name='mom_request';
+reset role;
+
+-- F-10, 8.3.1: a car whose driver lost the race gets the race codes, not NOT_FOUND. 엄마 takes and starts 아빠's request
+-- after both phone refusals; 이모's car then tries it.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{data,pickup,status}','assigned','엄마 takes the request')
+  from saved where name='dad_request';
+select is(public.mark_en_route(p.id,p.version)#>>'{data,pickup,status}','en_route','and departs')
+  from saved s join public.pickups p on p.id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+reset role;
+insert into saved select 'version_race',to_jsonb(p.version) from saved s join public.pickups p
+  on p.id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,code}'||':'||
+  (public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,detail,by}'),'ALREADY_TAKEN:엄마',
+  '이모''s car hears that 엄마 already took the trip') from saved where name='dad_request';
+select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,(select v.value::int from saved v where v.name='version_race'),
+  pg_temp.fixture(1191))#>>'{error,code}','INVALID_STATE','starting another driver''s trip that is under way is INVALID_STATE (8.3.1)')
+  from saved where name='dad_request';
+select is(public.mark_arrived((value#>>'{data,pickup,id}')::uuid,'manual',p_expected_version=>(select v.value::int from saved v where v.name='version_race'))
+  #>>'{error,code}','NOT_FOUND','other actions on someone else''s trip stay NOT_FOUND (2.2)') from saved where name='dad_request';
+reset role;
+update public.vehicles set current_driver_member_id=pg_temp.fixture(1112) where id=pg_temp.fixture(1141);
+set local role authenticated;
+select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,code}','NOT_FOUND',
+  'a car driven by the requester still cannot see the request') from saved where name='dad_request';
+reset role;
+update public.vehicles set current_driver_member_id=pg_temp.fixture(1113) where id=pg_temp.fixture(1141);
+
 select * from finish();
 rollback;

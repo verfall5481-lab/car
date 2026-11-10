@@ -246,6 +246,15 @@ as $$
     where id = p_offer_id and status = 'pending'
 $$;
 
+-- 4.4 #7, 8.7: a family-wide offer is declined once every driver it was for has declined it, from a phone or a car.
+create function deriro_private.everyone_declined(p_offer public.pickup_offers, p_pickup public.pickups)
+returns boolean language sql stable set search_path = ''
+as $$
+  select not exists (select 1 from public.family_members m where m.family_id = p_pickup.family_id and m.can_drive
+    and m.left_at is null and m.id is distinct from p_pickup.rider_member_id and m.id is distinct from p_offer.from_member_id
+    and not exists (select 1 from public.offer_responses r where r.offer_id = p_offer.id and r.member_id = m.id))
+$$;
+
 create function deriro_private.expire_pickup(p_pickup public.pickups)
 returns public.pickups language plpgsql set search_path = ''
 as $$
@@ -342,8 +351,12 @@ begin
   is_offer_target := is_driver and actor.member_id is distinct from offer.from_member_id
     and (offer.to_member_id is null or actor.member_id = offer.to_member_id);
 
+  -- A car acts on its own trip, an open pickup, its driver's assignment or an offer to its driver (2.2). A car whose
+  -- driver lost the race still learns why, so accept and vehicle_start reach their rules (F-10 ALREADY_TAKEN, 8.3.1
+  -- NO_VALID_OFFER). Another family's pickup is NOT_FOUND above, before anything about it is read.
   if actor.kind = 'vehicle' and not (is_assignee or (is_driver and
-    (pickup.status = 'open' or (pickup.status = 'assigned' and pickup.assignee_member_id = actor.member_id)
+    (p_action in ('accept', 'vehicle_start') or pickup.status = 'open'
+      or (pickup.status = 'assigned' and pickup.assignee_member_id = actor.member_id)
       or (offer.status is not distinct from 'pending' and is_offer_target))))
   then return deriro_private.err('NOT_FOUND'); end if;
 
@@ -454,11 +467,8 @@ begin
         insert into public.offer_responses(family_id, offer_id, member_id)
           values (pickup.family_id, offer.id, actor.member_id) on conflict do nothing;
         if found then
-          if offer.to_member_id is not null or not exists (
-            select 1 from public.family_members m where m.family_id = pickup.family_id and m.can_drive and m.left_at is null
-              and m.id is distinct from pickup.rider_member_id and m.id is distinct from offer.from_member_id
-              and not exists (select 1 from public.offer_responses r where r.offer_id = offer.id and r.member_id = m.id)
-          ) then perform deriro_private.resolve_offer(offer.id, 'declined', actor.member_id); end if;
+          if offer.to_member_id is not null or deriro_private.everyone_declined(offer, pickup)
+          then perform deriro_private.resolve_offer(offer.id, 'declined', actor.member_id); end if;
           perform deriro_private.add_event(pickup, actor, 'offer_declined', jsonb_build_object('offer_id', offer.id));
         end if;
       else

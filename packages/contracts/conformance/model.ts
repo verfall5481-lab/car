@@ -193,7 +193,9 @@ export type ActStep = {
 export type ClockStep = { clock: number };
 export type ParkStep = { park: string; parked: boolean };
 export type RoleStep = { member: string; canDrive: boolean };
-export type Step = ActStep | ClockStep | ParkStep | RoleStep;
+/** The car's current driver changes while it is parked (`vehicle_set_driver`; the demo refuses it mid-trip, P-15). */
+export type DriverStep = { driver: string; member: string };
+export type Step = ActStep | ClockStep | ParkStep | RoleStep | DriverStep;
 
 export type Scenario = {
   name: string;
@@ -216,7 +218,7 @@ export type KnownDivergence = {
 
 export type Run = {
   created: Record<string, Outcome>;
-  /** Aligned with `scenario.steps`; `null` for clock, park and role steps. */
+  /** Aligned with `scenario.steps`; `null` for clock, park, role and driver steps. */
   steps: (Outcome | null)[];
 };
 

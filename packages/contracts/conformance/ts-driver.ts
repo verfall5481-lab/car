@@ -57,6 +57,7 @@ export function runTs(scenario: Scenario): Run {
     if (isAct(step)) return world.act(step, scenario.pickups[0].key);
     if ("clock" in step) world.now += step.clock * minute;
     else if ("park" in step) world.vehicle(step.park).parked = step.parked;
+    else if ("driver" in step) world.vehicle(step.driver).currentDriverId = step.member;
     else world.members = world.members.map((member) => member.id === step.member ? { ...member, canDrive: step.canDrive } : member);
     return null;
   });
@@ -162,26 +163,29 @@ class TsWorld {
     const before = this.pickups.get(key);
     if (!before) throw new Error(`unknown pickup ${key}`);
     const actor = this.actor(step.actor);
-    const result = this.dispatch(key, before, actor, step.do);
-    this.record(key, actor, step.do.type, result);
+    const [type, result] = this.dispatch(key, before, actor, step.do);
+    this.record(key, actor, type, result);
     return this.outcome(before, this.pickups.get(key)!, result);
   }
 
-  private dispatch(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec): PickupResult {
+  /** Runs the step and names what ran: a `PickupAction` type or the composition function's own name. */
+  private dispatch(key: string, pickup: Pickup, actor: Actor, spec: ActionSpec): [string, PickupResult] {
     const expectedVersion = versionOf(pickup.version, "version" in spec ? spec.version : undefined);
     switch (spec.type) {
       case "sweep":
-        return sweepPickup(pickup, this.context());
+        return [spec.type, sweepPickup(pickup, this.context())];
       case "vehicle_decline":
-        return declineFromVehicle(pickup, actor, { expectedVersion, offerId: this.id("offer") }, this.context());
+        return [spec.type, declineFromVehicle(pickup, actor, { expectedVersion, offerId: this.id("offer") }, this.context())];
       case "nav_result":
         // TS has no navigation result. The demo decides a navigation failure on the car (`navFails`) at the start.
-        return { ok: true, pickup, events: [] };
+        return [spec.type, { ok: true, pickup, events: [] }];
       case "edit_routine":
       case "archive_routine":
-        return reviseOccurrence(pickup, this.plan(key, spec), this.context());
-      default:
-        return applyPickupAction(pickup, actor, this.action(key, pickup, actor, spec, expectedVersion), this.context());
+        return [spec.type, reviseOccurrence(pickup, this.plan(key, spec), this.context())];
+      default: {
+        const action = this.action(key, pickup, actor, spec, expectedVersion);
+        return [action.type, applyPickupAction(pickup, actor, action, this.context())];
+      }
     }
   }
 

@@ -3,7 +3,8 @@
 // transaction as the acting principal (`set local role authenticated` + `request.jwt.claim.sub`).
 // Members are non-anonymous auth users; rider devices and vehicles are anonymous ones.
 // Time: the database clock cannot be moved, so a clock step shifts every stored timestamp of the family back
-// by the same amount (triggers off), which is the same as moving `now()` forward.
+// by the same amount (triggers off), which is the same as moving `now()` forward. Routine times shift with them.
+// Each family lives in a fixed-offset zone where it is about midday, so a routine time never wraps past midnight.
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
@@ -23,6 +24,12 @@ import type {
 } from "./model.ts";
 
 const supabase = new URL("../../../supabase/", import.meta.url);
+
+/** A fixed-offset time zone where it is now between 12:00 and 13:00. */
+function middayZone(): string {
+  const offset = ((12 - new Date().getUTCHours() + 36) % 24) - 12;
+  return offset === 0 ? "Etc/GMT" : `Etc/GMT${offset > 0 ? "-" : "+"}${Math.abs(offset)}`;
+}
 
 /** auth-shim.sql, then every migration in order, as packages/contracts/test-db/embedded.mjs applies them. */
 export async function bootDatabase(): Promise<PGlite> {
@@ -64,6 +71,7 @@ export async function runSql(db: PGlite, scenario: Scenario): Promise<Run> {
     }
     if ("clock" in step) await world.shift(step.clock);
     else if ("park" in step) await world.park(step.park, step.parked);
+    else if ("driver" in step) await world.driver(step.driver, step.member);
     else await world.role(step.member, step.canDrive);
     steps.push(null);
   }
@@ -84,6 +92,8 @@ type PickupRow = {
   nav_destination_revision: number | null;
   nav_status: NonNullable<Outcome["sql"]>["navStatus"];
   is_customized: boolean;
+  announced: boolean;
+  wanted_in: number;
   cancel_reason: string | null;
   dest_lat: number;
   dest_lng: number;
@@ -114,6 +124,7 @@ class SqlWorld {
   private readonly db: PGlite;
   private readonly family: FamilySpec;
   private readonly familyId = randomUUID();
+  private readonly zone = middayZone();
   private readonly ids = new Map<string, string>();
   private readonly keys = new Map<string, string>();
   private readonly auth = new Map<string, string>();
@@ -147,7 +158,7 @@ class SqlWorld {
     const family = this.family;
     const familyId = this.familyId;
     await this.db.transaction(async (tx) => {
-      await tx.query("insert into public.families(id, name) values ($1, '시험 가족')", [familyId]);
+      await tx.query("insert into public.families(id, name, timezone) values ($1, '시험 가족', $2)", [familyId, this.zone]);
       for (const member of family.members) {
         const user = this.user(member.key);
         await tx.query("insert into auth.users(id, is_anonymous) values ($1, false)", [user]);
@@ -192,11 +203,15 @@ class SqlWorld {
       }
       for (const spec of pickups) {
         if (spec.kind !== "routine") continue;
+        // The routine runs at the occurrence's local time on its day only, so revise_routine reproduces wanted_at
+        // and ensure_occurrences finds nothing to add.
         await tx.query(
           `insert into public.routines(id, family_id, rider_id, place_id, weekdays, time_local, notify_before_min,
-             default_assignee_member_id, default_vehicle_id) values ($1, $2, $3, $4, 127, '17:30', $5, $6, $7)`,
+             default_assignee_member_id, default_vehicle_id, start_date, end_date)
+           select $1, $2, $3, $4, 127, moment.local::time, $5, $6, $7, moment.local::date, moment.local::date
+           from (select (now() + make_interval(mins => $8)) at time zone $9 as local) moment`,
           [this.id(`routine:${spec.key}`), familyId, this.id(spec.rider), this.id(spec.place), spec.notifyBeforeMin ?? 20,
-            spec.assignee ? this.id(spec.assignee) : null, spec.vehicle ? this.id(spec.vehicle) : null],
+            spec.assignee ? this.id(spec.assignee) : null, spec.vehicle ? this.id(spec.vehicle) : null, spec.wantedInMin, this.zone],
         );
       }
     });
@@ -239,11 +254,12 @@ class SqlWorld {
     const result = await this.db.query<{ id: string }>(
       `insert into public.pickups(family_id, rider_id, source, routine_id, occurrence_date, status, assignment_round,
          assignee_member_id, vehicle_id, place_id, location_source, location_confirmed, dest_lat, dest_lng, dest_label, wanted_at)
-       values ($1, $2, 'routine', $3, current_date, $4::public.pickup_status, $5, $6, $7, $8, 'saved_place', true,
-         $9, $10, $11, now() + make_interval(mins => $12)) returning id`,
+       select $1, $2, 'routine', routine.id, routine.start_date, $4::public.pickup_status, $5, $6, $7, $8, 'saved_place', true,
+         $9, $10, $11, (routine.start_date + routine.time_local) at time zone $12
+       from public.routines routine where routine.id = $3 returning id`,
       [this.familyId, this.id(spec.rider), this.id(`routine:${spec.key}`), spec.assignee ? "assigned" : "open",
         spec.assignee ? 1 : 0, spec.assignee ? this.id(spec.assignee) : null, spec.vehicle ? this.id(spec.vehicle) : null,
-        this.id(spec.place), place.lat, place.lng, place.label, spec.wantedInMin],
+        this.id(spec.place), place.lat, place.lng, place.label, this.zone],
     );
     return result.rows[0].id;
   }
@@ -347,6 +363,28 @@ class SqlWorld {
         // The hourly scheduler (9장), run as the superuser for this family only.
         await this.db.query("select deriro_private.run_escalations($1::uuid)", [this.familyId]);
         return { ok: true };
+      case "edit_routine": {
+        // The guardian saves the routine as it is, with the step's changes (P-09); revise_routine follows.
+        const keep = (value: string | null | undefined) => value === undefined;
+        return this.call(step.actor,
+          `select public.upsert_routine(
+             p_rider_id => routine.rider_id, p_rider_member_id => routine.rider_member_id,
+             p_place_id => coalesce($2::uuid, routine.place_id),
+             p_weekdays => case when $3::boolean
+               then routine.weekdays & ~(1 << (extract(isodow from routine.start_date)::int - 1)) else routine.weekdays end,
+             p_time_local => routine.time_local + make_interval(mins => $4::int),
+             p_notify_before_min => coalesce($5::int, routine.notify_before_min),
+             p_default_assignee_member_id => case when $6::boolean then routine.default_assignee_member_id else $7::uuid end,
+             p_default_vehicle_id => case when $8::boolean then routine.default_vehicle_id else $9::uuid end,
+             p_start_date => routine.start_date, p_end_date => routine.end_date, p_pickup_point_id => routine.pickup_point_id,
+             p_routine_id => routine.id, p_active => routine.active) as r
+           from public.routines routine where routine.id = $1`,
+          [this.id(`routine:${key}`), spec.place ? this.id(spec.place) : null, spec.dropDay === true, spec.shiftMinutes ?? 0,
+            spec.notifyBeforeMin ?? null, keep(spec.assignee), optional(spec.assignee ?? undefined),
+            keep(spec.vehicle), optional(spec.vehicle ?? undefined)]);
+      }
+      case "archive_routine":
+        return call("archive_routine($1::uuid)", [this.id(`routine:${key}`)]);
     }
   }
 
@@ -355,6 +393,7 @@ class SqlWorld {
     const pickup = await this.db.query<PickupRow>(
       `select status, assignee_member_id, vehicle_id, version, assignment_round, location_confirmed, destination_revision,
          nav_session_id, nav_destination_revision, nav_status, is_customized, cancel_reason, dest_lat, dest_lng, dest_label,
+         routine_offer_created_at is not null as announced, round(extract(epoch from wanted_at - now()) / 60)::int as wanted_in,
          jsonb_build_object('acceptedAt', accepted_at is not null, 'enRouteAt', en_route_at is not null,
            'arrivedAt', arrived_at is not null, 'readyAt', rider_ready_at is not null,
            'notMetAt', not_met_reported_at is not null, 'completedAt', completed_at is not null,
@@ -407,8 +446,11 @@ class SqlWorld {
       vehicle: this.key(row.vehicle_id),
       version: row.version,
       round: row.assignment_round,
+      wantedInMin: row.wanted_in,
       confirmed: row.location_confirmed,
       destinationRevision: row.destination_revision,
+      customized: row.is_customized,
+      announced: row.announced,
       navSession: row.nav_session_id !== null,
       newNavSession: row.nav_session_id !== null && row.nav_session_id !== before.pickup.nav_session_id,
       set: stampNames.filter((name) => row.stamps[name]),
@@ -426,7 +468,6 @@ class SqlWorld {
       pickupCount: after.count,
       sql: {
         navStatus: row.nav_status,
-        customized: row.is_customized,
         cancelReason: row.cancel_reason,
         stamps: sqlStampNames.filter((name) => row.stamps[name]),
       },
@@ -454,6 +495,7 @@ class SqlWorld {
            resolved_at = resolved_at - $2::interval where family_id = $1`,
         [this.familyId, by],
       );
+      await tx.query("update public.routines set time_local = time_local - $2::interval where family_id = $1", [this.familyId, by]);
       await tx.query(
         `update deriro_private.rate_limits set resets_at = resets_at - $2::interval where principal in (
            select id from public.riders where family_id = $1 union select id from public.family_members where family_id = $1)`,
@@ -465,6 +507,12 @@ class SqlWorld {
   async park(vehicle: string, parked: boolean): Promise<void> {
     await this.db.query("update public.vehicle_states set gear = $2, collected_at = now() where vehicle_id = $1",
       [this.id(vehicle), parked ? "P" : "D"]);
+  }
+
+  async driver(vehicle: string, member: string): Promise<void> {
+    await this.db.query("update public.vehicle_states set gear = 'P', collected_at = now() where vehicle_id = $1", [this.id(vehicle)]);
+    const response = await this.call(vehicle, "select public.vehicle_set_driver($1::uuid) as r", [this.id(member)]);
+    if (!response.ok) throw new Error(`vehicle_set_driver failed: ${JSON.stringify(response)}`);
   }
 
   async role(member: string, canDrive: boolean): Promise<void> {

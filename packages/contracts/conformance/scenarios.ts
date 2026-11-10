@@ -58,11 +58,21 @@ export const scenarios: readonly Scenario[] = [
       { actor: "mom", do: { type: "depart" }, expect: { status: "en_route", version: 3 } },
       { actor: "dad", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", status: "en_route", events: [] } },
       { actor: "mom", do: { type: "accept" }, expect: { status: "en_route", version: 3, events: [] } },
-      // F-10, V-03 button table: the car that loses also hears who took it ("엄마가 먼저 맡았어요").
+      // F-10, V-03 button table: the car that loses also hears who took it ("엄마가 먼저 맡았어요"), from the request card's
+      // "수락" and from its "출발하고 안내" (no offer ID), whatever version the card showed (4.5). Nothing changes.
+      { actor: "car", do: { type: "accept" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", version: 3, events: [] } },
       {
-        actor: "car", do: { type: "accept" }, divergence: "vehicle-sees-not-found",
-        expect: { code: "ALREADY_TAKEN", assignee: "mom", events: [] },
+        actor: "car", do: { type: "vehicle_start" },
+        expect: { code: "ALREADY_TAKEN", status: "en_route", version: 3, navSession: false, events: [], active: { car: null } },
       },
+      {
+        actor: "car", do: { type: "vehicle_start", version: { stale: 2 } },
+        expect: { code: "ALREADY_TAKEN", status: "en_route", version: 3, events: [] },
+      },
+      { actor: "mom", do: { type: "arrive" }, expect: { status: "arrived", version: 4 } },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", status: "arrived", events: [] } },
+      { actor: "mom", do: { type: "board" }, expect: { status: "completed" } },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "INVALID_STATE", status: "completed", events: [] } },
     ],
   },
   {
@@ -82,7 +92,7 @@ export const scenarios: readonly Scenario[] = [
     steps: [
       {
         actor: "mom", do: { type: "accept" },
-        expect: { assignee: "mom", version: 2, round: 1, set: ["acceptedAt"], events: ["accepted"], sql: { customized: true } },
+        expect: { assignee: "mom", version: 2, round: 1, set: ["acceptedAt"], events: ["accepted"], customized: true },
       },
       {
         actor: "mom", do: { type: "offer", to: "dad" },
@@ -146,13 +156,13 @@ export const scenarios: readonly Scenario[] = [
     steps: [
       {
         actor: "dad", do: { type: "offer", to: "mom" },
-        expect: { assignee: "dad", version: 1, offer: { from: "dad", to: "mom" }, events: ["offered"], sql: { customized: true } },
+        expect: { assignee: "dad", version: 1, offer: { from: "dad", to: "mom" }, events: ["offered"], customized: true },
       },
       {
         actor: "dad", do: { type: "accept" },
         expect: {
           assignee: "dad", vehicle: "car", version: 2, round: 1, set: ["acceptedAt"], offer: null,
-          resolved: { from: "dad", status: "cancelled", by: "dad" }, events: ["accepted"], sql: { customized: true },
+          resolved: { from: "dad", status: "cancelled", by: "dad" }, events: ["accepted"], customized: true,
         },
       },
       { actor: "mom", do: { type: "respond", response: "accept" }, expect: { code: "OFFER_NOT_PENDING", assignee: "dad" } },
@@ -183,7 +193,7 @@ export const scenarios: readonly Scenario[] = [
         actor: "dad", do: { type: "take_over" },
         expect: {
           assignee: "dad", version: 2, round: 2, set: ["acceptedAt"], offer: null,
-          resolved: { from: "mom", status: "cancelled", by: null }, events: ["took_over"], sql: { customized: true },
+          resolved: { from: "mom", status: "cancelled", by: null }, events: ["took_over"], customized: true,
         },
       },
       { actor: "dad", do: { type: "take_over" }, expect: { assignee: "dad", version: 2, events: [] } },
@@ -274,7 +284,7 @@ export const scenarios: readonly Scenario[] = [
     pickups: [routine({ assignee: "mom", wantedInMin: 50, notifyBeforeMin: 45 })],
     steps: [
       {
-        actor: "mom", do: { type: "offer", to: "dad" }, divergence: { demo: "demo-occurrence-notify-before" },
+        actor: "mom", do: { type: "offer", to: "dad" },
         expect: { offer: { from: "mom", to: "dad", expiresInMin: 5 } },
       },
     ],
@@ -334,6 +344,7 @@ export const scenarios: readonly Scenario[] = [
     name: "18. 4.3 #4, 8.3.1: \"출발하고 안내\" on an open request accepts, departs and issues a session at once; a retry returns it",
     pickups: [request()],
     steps: [
+      { actor: "car", do: { type: "vehicle_start", version: { stale: 1 } }, expect: { code: "STALE_VERSION", status: "open", events: [] } },
       {
         actor: "car", do: { type: "vehicle_start" },
         expect: {
@@ -360,15 +371,32 @@ export const scenarios: readonly Scenario[] = [
     ],
   },
   {
-    name: "20. S-39, 4.3 #18: \"출발하고 안내\" from a handoff card accepts the offer and departs in one step; NO_VALID_OFFER otherwise",
+    name: "20. S-39, 4.3 #18, 8.3.1: \"출발하고 안내\" from a handoff card accepts a valid offer and departs at once; " +
+      "an offer not valid for this driver is NO_VALID_OFFER; without an offer ID it is ALREADY_TAKEN (V-03)",
+    family: grandpa,
     pickups: [routine({ assignee: "mom" })],
     steps: [
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", events: [] } },
+      { actor: "mom", do: { type: "offer", to: "grandpa" }, expect: { offer: { from: "mom", to: "grandpa" } } },
       {
-        actor: "car", do: { type: "vehicle_start" }, divergence: "vehicle-sees-not-found",
-        expect: { code: "NO_VALID_OFFER", assignee: "mom", events: [] },
+        actor: "car", do: { type: "vehicle_start", withOffer: true },
+        expect: { code: "NO_VALID_OFFER", assignee: "mom", offer: { from: "mom", to: "grandpa" }, events: [] },
+      },
+      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "ALREADY_TAKEN", assignee: "mom", events: [] } },
+      { actor: "mom", do: { type: "offer", to: "dad" }, expect: { offer: { from: "mom", to: "dad", expiresInMin: 10 } } },
+      { clock: 11 },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true },
+        expect: {
+          code: "NO_VALID_OFFER", assignee: "mom", offer: null, resolved: { from: "mom", status: "expired", by: null },
+          events: ["offer_expired"],
+        },
       },
       { actor: "mom", do: { type: "offer", to: "dad" }, expect: { offer: { from: "mom", to: "dad" } } },
-      { actor: "car", do: { type: "vehicle_start" }, expect: { code: "NO_VALID_OFFER", assignee: "mom", events: [] } },
+      {
+        actor: "car", do: { type: "vehicle_start", withOffer: true, version: { stale: 1 } },
+        expect: { code: "STALE_VERSION", assignee: "mom", offer: { from: "mom", to: "dad" }, events: [] },
+      },
       {
         actor: "car", do: { type: "vehicle_start", withOffer: true },
         expect: {
@@ -633,7 +661,7 @@ export const scenarios: readonly Scenario[] = [
     pickups: [request()],
     steps: [
       {
-        actor: "car", do: { type: "vehicle_decline" }, divergence: { spec: "car-declines-request-offer" },
+        actor: "car", do: { type: "vehicle_decline" },
         expect: { status: "open", version: 1, offer: { from: null, to: null, declinedBy: ["dad"] }, events: ["request_declined"] },
       },
       {
@@ -647,8 +675,17 @@ export const scenarios: readonly Scenario[] = [
     pickups: [request({ by: "mom" })],
     steps: [
       {
-        actor: "car", do: { type: "vehicle_decline" }, divergence: { spec: "last-car-decline-keeps-request-offer" },
-        expect: { status: "open", offer: null, resolved: { from: null, status: "declined", by: "dad" } },
+        actor: "car", do: { type: "vehicle_decline" },
+        expect: {
+          status: "open", version: 1, offer: null, resolved: { from: null, status: "declined", by: "dad" },
+          events: ["request_declined"],
+        },
+      },
+      { actor: "car", do: { type: "vehicle_decline" }, expect: { status: "open", resolved: null, events: [] } },
+      // 4.3 #3: a driver who declined may still accept the open request directly.
+      {
+        actor: "dad", do: { type: "accept" },
+        expect: { status: "assigned", assignee: "dad", offer: null, resolved: null, events: ["accepted"] },
       },
     ],
   },
@@ -681,13 +718,18 @@ export const scenarios: readonly Scenario[] = [
     pickups: [routine({ wantedInMin: 15 })],
     steps: [
       {
-        actor: "system", do: { type: "sweep" }, divergence: { spec: "demo-scheduler-has-no-routine-offer" },
-        expect: { status: "open", offer: { from: null, to: null, expiresInMin: 15 } },
+        actor: "system", do: { type: "sweep" },
+        expect: { status: "open", version: 1, announced: true, offer: { from: null, to: null, expiresInMin: 15 }, events: [] },
       },
+      { clock: 16 },
       {
-        actor: "dad", do: { type: "accept" }, divergence: { spec: "demo-scheduler-has-no-routine-offer" },
-        expect: { assignee: "dad", resolved: { from: null, status: "accepted", by: "dad" }, events: ["accepted"] },
+        actor: "system", do: { type: "sweep" },
+        expect: { status: "open", offer: null, resolved: { from: null, status: "expired", by: null }, events: ["offer_expired"] },
       },
+      { actor: "system", do: { type: "sweep" }, expect: { status: "open", announced: true, offer: null, resolved: null, events: [] } },
+      // F-21: "일찍 끝났어" does not announce it a second time either.
+      { actor: "minjun", do: { type: "ready" }, expect: { status: "open", set: ["readyAt"], offer: null, events: ["rider_ready"] } },
+      { actor: "dad", do: { type: "accept" }, expect: { assignee: "dad", resolved: null, events: ["accepted"], customized: true } },
     ],
   },
   {
@@ -703,6 +745,97 @@ export const scenarios: readonly Scenario[] = [
         },
       },
       { actor: "mom", do: { type: "respond", response: "accept" }, expect: { code: "OFFER_NOT_PENDING", assignee: "dad" } },
+    ],
+  },
+  {
+    name: "43. 4.4 #12, 4.1: a routine edit gives its untouched open occurrence the new default driver and withdraws the " +
+      "family offer, which is not made again (A.4)",
+    pickups: [routine({ wantedInMin: 15 })],
+    steps: [
+      { actor: "system", do: { type: "sweep" }, expect: { status: "open", announced: true, offer: { from: null, to: null } } },
+      {
+        actor: "mom", do: { type: "edit_routine", assignee: "dad", vehicle: "car" },
+        expect: {
+          status: "assigned", assignee: "dad", vehicle: "car", round: 1, version: 2, customized: false, offer: null,
+          resolved: { from: null, status: "cancelled", by: null }, events: ["routine_reassigned"],
+        },
+      },
+      {
+        actor: "mom", do: { type: "edit_routine", assignee: null, vehicle: null },
+        expect: { status: "open", assignee: null, vehicle: null, round: 2, version: 3, resolved: null, events: ["routine_reassigned"] },
+      },
+      { actor: "system", do: { type: "sweep" }, expect: { status: "open", announced: true, offer: null, events: [] } },
+    ],
+  },
+  {
+    name: "44. F-07: a routine's new time, place and notify time reach its untouched occurrence (version and destination " +
+      "revision move, no event)",
+    pickups: [routine({ assignee: "dad", vehicle: "car" })],
+    steps: [
+      {
+        actor: "mom", do: { type: "edit_routine", shiftMinutes: 30 },
+        expect: { status: "assigned", assignee: "dad", wantedInMin: 90, version: 2, round: 1, destinationRevision: 1, events: [] },
+      },
+      {
+        actor: "mom", do: { type: "edit_routine", place: "home" },
+        expect: { wantedInMin: 90, version: 3, destinationRevision: 2, confirmed: true, events: [] },
+      },
+      { actor: "mom", do: { type: "edit_routine", notifyBeforeMin: 85 }, expect: { version: 3, events: [] } },
+      // F-11: the handoff expiry follows the new notify time, min(now + 10, wanted_at - 85).
+      {
+        actor: "dad", do: { type: "offer", to: "mom" },
+        expect: { offer: { from: "dad", to: "mom", expiresInMin: 5 }, customized: true, events: ["offered"] },
+      },
+    ],
+  },
+  {
+    name: "45. S-28, S-16: an accepted occurrence keeps its holder through routine edits and deletion; deleting the routine " +
+      "cancels its untouched occurrence (archive_routine)",
+    pickups: [routine({ key: "a", assignee: "dad", vehicle: "car" }), routine({ key: "b", assignee: "dad", vehicle: "car" })],
+    steps: [
+      { actor: "dad", pickup: "a", do: { type: "accept" }, expect: { assignee: "dad", customized: true } },
+      {
+        actor: "mom", pickup: "a", do: { type: "edit_routine", assignee: "mom", vehicle: null, shiftMinutes: 15 },
+        expect: { assignee: "dad", vehicle: "car", wantedInMin: 60, version: 2, events: [] },
+      },
+      {
+        actor: "mom", pickup: "b", do: { type: "archive_routine" },
+        expect: {
+          status: "cancelled", version: 2, customized: false, events: ["cancelled"],
+          sql: { cancelReason: "routine_archived", stamps: ["cancelledAt"] },
+        },
+      },
+      { actor: "mom", pickup: "a", do: { type: "archive_routine" }, expect: { status: "assigned", assignee: "dad", events: [] } },
+    ],
+  },
+  {
+    name: "46. F-07, 4.4 #10: dropping the occurrence's weekday from its routine cancels it and withdraws its family offer",
+    pickups: [routine({ wantedInMin: 15 })],
+    steps: [
+      { actor: "system", do: { type: "sweep" }, expect: { offer: { from: null, to: null } } },
+      {
+        actor: "mom", do: { type: "edit_routine", dropDay: true },
+        expect: {
+          status: "cancelled", version: 2, offer: null, resolved: { from: null, status: "cancelled", by: null },
+          events: ["cancelled"], sql: { cancelReason: "routine_archived" },
+        },
+      },
+    ],
+  },
+  {
+    name: "47. 8.3.1: the trip's own car reopens guidance after its driver changed while parked; the assignee stays",
+    pickups: [request()],
+    steps: [
+      { actor: "car", do: { type: "vehicle_start" }, expect: { status: "en_route", assignee: "dad", version: 2, active: { car: "p" } } },
+      { driver: "car", member: "mom" },
+      {
+        actor: "car", do: { type: "vehicle_start" },
+        expect: {
+          status: "en_route", assignee: "dad", vehicle: "car", version: 2, newNavSession: true,
+          events: ["navigation_requested"], active: { car: "p" },
+        },
+      },
+      { actor: "car", do: { type: "nav_arrival" }, expect: { status: "arrived", events: ["arrived"] } },
     ],
   },
 ];

@@ -335,11 +335,12 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
   }
 
   // V-03, 4.5: a car that pressed "출발하고 안내" on a request or routine card (no offer ID) and lost the race hears who
-  // took it, whatever version its card showed, as accept does. From a handoff card the usual checks apply (8.3.1).
+  // took it, whatever version its card showed, as accept does. It writes nothing. The trip's own car is never told
+  // this, even after its driver changed (8.3.1: it reopens guidance). From a handoff card the usual checks apply.
   const heldByOther = (pickup.status === "assigned" || pickup.status === "en_route" || pickup.status === "arrived") &&
     pickup.assigneeId !== memberId;
-  if (action.type === "vehicle_start" && action.offerId === undefined && heldByOther) {
-    return actor.kind === "vehicle" && isDriver ? fail("ALREADY_TAKEN") : fail("FORBIDDEN");
+  if (action.type === "vehicle_start" && actor.kind === "vehicle" && action.offerId === undefined && !isAssignee && heldByOther) {
+    return fail("ALREADY_TAKEN");
   }
 
   if ("expectedVersion" in action && action.expectedVersion !== pickup.version) return fail("STALE_VERSION");

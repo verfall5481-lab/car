@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   web-and-contracts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -28,7 +28,7 @@ jobs:
       - run: pnpm test:e2e
 
   edge-functions:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -46,7 +46,7 @@ jobs:
       - run: deno test --node-modules-dir=none --frozen --lock=supabase/functions/deno.lock --allow-env supabase/functions/_shared/edge.test.ts
 
   sql-concurrency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:

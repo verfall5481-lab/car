@@ -20,6 +20,11 @@ select is(public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.valu
   from step r,step p where r.name='rider' and p.name='home';
 select is(public.get_today(2)->>'ok','true','operations: read today');
 select is(public.get_family_overview()->>'ok','true','operations: read the family overview');
+select is(public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.value#>>'{data,place,id}')::uuid,127,'17:30',
+  p_default_assignee_member_id=>(o.value#>>'{data,member,id}')::uuid,p_start_date=>(now() at time zone 'Asia/Seoul')::date+1,
+  p_routine_id=>(select x.id from public.routines x where x.time_local='17:30'))#>>'{data,routine,default_assignee_member_id}',
+  o.value#>>'{data,member,id}','operations: name a default driver for an existing routine')
+  from step r,step p,step o where r.name='rider' and p.name='home' and o.name='owner';
 insert into step select 'paused',public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.value#>>'{data,place,id}')::uuid,127,'18:30',
   p_start_date=>(now() at time zone 'Asia/Seoul')::date+1) from step r,step p where r.name='rider' and p.name='home';
 select is(public.upsert_routine((r.value#>>'{data,rider,id}')::uuid,null,(p.value#>>'{data,place,id}')::uuid,127,'18:30',
@@ -31,6 +36,8 @@ select is(public.archive_routine((select r.id from public.routines r where r.tim
 reset role;
 select is((select string_agg(e.actor_kind||':'||(e.payload->>'cause'),',' order by e.actor_kind) from public.pickup_events e
   where e.event_type='cancelled'),'guardian:routine_paused,system:routine_archived','operations: both cancellations are recorded');
+select is((select string_agg(e.actor_kind||':'||(e.payload->>'previous_status'),',') from public.pickup_events e
+  where e.event_type='routine_reassigned'),'system:open','operations: the recomputed holder is recorded');
 set local role authenticated;
 
 set local request.jwt.claim.sub='60000000-0000-4000-8000-000000000003';

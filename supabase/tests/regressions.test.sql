@@ -398,5 +398,91 @@ select is((select template||':'||status from public.notifications_outbox where p
   and recipient_member_id=pg_temp.fixture(1012) and expected_status='cancelled'),'pickup_cancelled:pending',
   'the guardian who accepted it is told');
 
+-- Routine recompute (8.3 apply_routine_change). Tomorrow's open occurrence was already announced: its family-wide routine
+-- offer is pending and routine_offer_created_at is set (A.4). A routine edit then names 아빠 as the default driver.
+insert into auth.users(id,is_anonymous) values
+  (pg_temp.fixture(1101),false),(pg_temp.fixture(1102),false),(pg_temp.fixture(1103),false),(pg_temp.fixture(1104),true);
+insert into public.families(id,name) values(pg_temp.fixture(1110),'루틴 가족');
+insert into public.family_members(id,family_id,auth_user_id,display_name,role,can_drive,can_request,location_consented_at) values
+  (pg_temp.fixture(1111),pg_temp.fixture(1110),pg_temp.fixture(1101),'엄마','owner',true,true,now()),
+  (pg_temp.fixture(1112),pg_temp.fixture(1110),pg_temp.fixture(1102),'아빠','guardian',true,true,now()),
+  (pg_temp.fixture(1113),pg_temp.fixture(1110),pg_temp.fixture(1103),'이모','guardian',true,true,now());
+insert into public.riders(id,family_id,display_name,kind,consent_basis,location_consented_at)
+  values(pg_temp.fixture(1121),pg_temp.fixture(1110),'서연','child','guardian',now());
+insert into public.places(id,family_id,label,kind,lat,lng) values(pg_temp.fixture(1131),pg_temp.fixture(1110),'학원','academy',37.55,127.1);
+insert into public.vehicles(id,family_id,auth_user_id,nickname,current_driver_member_id)
+  values(pg_temp.fixture(1141),pg_temp.fixture(1110),pg_temp.fixture(1104),'이모 차',pg_temp.fixture(1113));
+insert into public.vehicle_states(vehicle_id,gear,collected_at,range_km) values(pg_temp.fixture(1141),'P',now(),500);
+insert into public.routines(id,family_id,rider_id,place_id,weekdays,time_local,start_date) values
+  (pg_temp.fixture(1171),pg_temp.fixture(1110),pg_temp.fixture(1121),pg_temp.fixture(1131),127,'23:59',(now() at time zone 'Asia/Seoul')::date),
+  (pg_temp.fixture(1172),pg_temp.fixture(1110),pg_temp.fixture(1121),pg_temp.fixture(1131),127,'22:00',(now() at time zone 'Asia/Seoul')::date);
+insert into public.pickups(id,family_id,rider_id,source,routine_id,occurrence_date,status,place_id,location_source,location_confirmed,
+  dest_lat,dest_lng,dest_label,wanted_at,routine_offer_created_at)
+select pg_temp.fixture(x.n),pg_temp.fixture(1110),pg_temp.fixture(1121),'routine',pg_temp.fixture(x.routine),(now() at time zone 'Asia/Seoul')::date+1,
+  'open',pg_temp.fixture(1131),'saved_place',true,37.55,127.1,'학원',((now() at time zone 'Asia/Seoul')::date+1+x.at) at time zone 'Asia/Seoul',now()
+from (values (1151,1171,time '23:59'),(1152,1172,time '22:00')) x(n,routine,at);
+insert into public.pickup_offers(id,family_id,pickup_id,origin,expires_at)
+select pg_temp.fixture(x.n+30),pg_temp.fixture(1110),pg_temp.fixture(x.n),'routine',p.wanted_at
+from (values (1151),(1152)) x(n) join public.pickups p on p.id=pg_temp.fixture(x.n);
+
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+select is(public.upsert_routine(pg_temp.fixture(1121),null,pg_temp.fixture(1131),127,'23:59',20,pg_temp.fixture(1112),
+  p_routine_id=>pg_temp.fixture(1171))->>'ok','true','엄마 names 아빠 as the routine''s default driver');
+select is(public.upsert_routine(pg_temp.fixture(1121),null,pg_temp.fixture(1131),127,'22:00',30,
+  p_routine_id=>pg_temp.fixture(1172))->>'ok','true','엄마 edits the other routine without naming a driver');
+reset role;
+select is((select p.status||':'||deriro_private.member_name(p.assignee_member_id)||':'||o.status from public.pickups p
+  join public.pickup_offers o on o.pickup_id=p.id where p.id=pg_temp.fixture(1151)),'assigned:아빠:cancelled',
+  'the recompute assigns 아빠 and the system withdraws the family-wide offer');
+select is((select resolved_by_member_id from public.pickup_offers where id=pg_temp.fixture(1181)),null::uuid,
+  'nobody is recorded as accepting the withdrawn offer');
+select is((select o.status::text from public.pickup_offers o where o.pickup_id=pg_temp.fixture(1152)),'pending',
+  'an edit that keeps the occurrence open keeps its offer');
+select is((select string_agg(e.event_type||':'||e.actor_kind||':'||(e.payload->>'previous_status'),',') from public.pickup_events e
+  where e.pickup_id=pg_temp.fixture(1151) and e.event_type<>'created'),'routine_reassigned:system:open',
+  'the new holder is recorded as one system event');
+select is((select count(*) from public.pickup_events e where e.pickup_id=pg_temp.fixture(1152) and e.event_type='routine_reassigned'),0::bigint,
+  'keeping the holder records no reassignment');
+select is((select count(*) from public.notifications_outbox where pickup_id in (pg_temp.fixture(1151),pg_temp.fixture(1152))),0::bigint,
+  'the routine edit pushes nobody');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001103';
+select is((select count(*) from public.pickup_offers where pickup_id=pg_temp.fixture(1151) and status='pending'),0::bigint,
+  '이모 can no longer read a pending offer for 아빠''s occurrence');
+select ok(not jsonb_path_exists(public.get_today(2),'$.data.pending_offers_to_me[*] ? (@.pickup_id == $id)',
+  jsonb_build_object('id',pg_temp.fixture(1151))),'이모''s today feed lists no offer for it');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select ok(not jsonb_path_exists(public.vehicle_get_feed(),'$.data.cards[*] ? (@.pickup_id == $id)',
+  jsonb_build_object('id',pg_temp.fixture(1151))),'이모''s car shows no offer card for it');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001102';
+select is((select a->>'assignee_display_name'||':'||coalesce(a->>'offer','none') from jsonb_array_elements(public.get_today(2)#>'{data,active}') a
+  where a->>'id'=pg_temp.fixture(1151)::text),'아빠:none','아빠''s feed shows his occurrence without an open offer');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001103';
+select is(public.respond_offer(pg_temp.fixture(1181),'accept',(select version from public.pickups where id=pg_temp.fixture(1151)))#>>'{error,code}',
+  'OFFER_NOT_PENDING','이모 cannot take 아빠''s occurrence through the withdrawn offer');
+reset role;
+
+-- Removing the default driver returns the occurrence to open. The routine offer is made once (A.4, S-43), so no new
+-- offer appears; guardians can still accept the open occurrence directly.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+select is(public.upsert_routine(pg_temp.fixture(1121),null,pg_temp.fixture(1131),127,'23:59',20,
+  p_routine_id=>pg_temp.fixture(1171))->>'ok','true','엄마 removes the default driver again');
+reset role;
+select is((select status||':'||coalesce(assignee_member_id::text,'-')||':'||(routine_offer_created_at is not null)
+  ||':'||(select count(*) from public.pickup_offers o where o.pickup_id=p.id and o.status='pending') from public.pickups p
+  where p.id=pg_temp.fixture(1151)),'open:-:true:0','the occurrence is open again without a second routine offer');
+select is((select string_agg(coalesce(e.payload->>'previous_assignee_id','-')||'>'||(e.payload->>'previous_status'),',' order by e.id)
+  from public.pickup_events e where e.pickup_id=pg_temp.fixture(1151) and e.event_type='routine_reassigned'),
+  '->open,'||pg_temp.fixture(1112)||'>assigned','each change of holder is recorded with what it replaced');
+select is((select count(*) from public.notifications_outbox where pickup_id=pg_temp.fixture(1151)),0::bigint,
+  'neither edit queued a notice');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001103';
+select is(public.accept_pickup(pg_temp.fixture(1151))#>>'{data,pickup,assignee_member_id}',pg_temp.fixture(1113)::text,
+  '이모 can accept the open occurrence directly');
+reset role;
+
 select * from finish();
 rollback;

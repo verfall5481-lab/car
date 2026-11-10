@@ -162,6 +162,8 @@ declare
   tz text;
   driver_id uuid;
   car_id uuid;
+  previous_assignee_id uuid;
+  previous_status public.pickup_status;
 begin
   if new is not distinct from old then return new; end if;
   if not new.active and new.archived_at is null then return new; end if;
@@ -192,6 +194,14 @@ begin
       perform deriro_private.add_event(occurrence, null, 'cancelled', jsonb_build_object('cause',
         case when new.archived_at is not null then 'routine_archived' else 'routine_changed' end));
     else
+      previous_assignee_id := occurrence.assignee_member_id;
+      previous_status := occurrence.status;
+      -- A pending family-wide routine offer asked for a driver while nobody held the trip. When the recompute gives the
+      -- occurrence another holder (open to assigned, assigned to open, or a different default driver), the system
+      -- withdraws that offer (4.4 cancelled; superseded is only for a newer offer, 4.4 #1).
+      if previous_assignee_id is distinct from driver_id then
+        update public.pickup_offers set status = 'cancelled',resolved_at = now() where pickup_id = occurrence.id and status = 'pending';
+      end if;
       update public.pickups set status = case when driver_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
         rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = driver_id,
         vehicle_id = car_id,
@@ -199,7 +209,14 @@ begin
           then 'saved_place'::public.location_source else 'saved_point'::public.location_source end,
         location_confirmed = true,dest_lat = coalesce(point.lat,place.lat),dest_lng = coalesce(point.lng,place.lng),
         dest_label = coalesce(point.label,place.label),pin_note = point.note,wanted_at = effective_at,cancelled_at = null,cancel_reason = null
-        where id = occurrence.id;
+        where id = occurrence.id returning * into occurrence;
+      -- A new holder is a transition and gets an event (4.5). The event queues no notice, so a routine edit does not
+      -- push the family per occurrence: the scheduler reminds a new default driver and announces an open occurrence at
+      -- most once (A.4, routine_offer_created_at is kept).
+      if previous_assignee_id is distinct from driver_id then
+        perform deriro_private.add_event(occurrence, null, 'routine_reassigned', jsonb_strip_nulls(jsonb_build_object(
+          'previous_assignee_id', previous_assignee_id, 'previous_status', previous_status, 'cause', 'routine_changed')));
+      end if;
     end if;
   end loop;
   if new.active and new.archived_at is null then perform deriro_private.ensure_occurrences(new.family_id,2); end if;

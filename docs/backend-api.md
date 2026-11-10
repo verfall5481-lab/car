@@ -61,6 +61,8 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 
 `upsert_routine`에 `active=false`, `cancel_future=true`를 넘기면 앞으로의 `open`·`assigned` 회차를 이미 수락된 회차까지 `skipped`로 취소한다. 회차마다 호출한 보호자의 `cancelled` 이벤트(`cause=routine_paused`)가 남고 취소 알림이 간다. `archive_routine`과 회차를 없애는 루틴 수정은 개별 변경 없는 미래 회차만 시스템 취소로 닫는다(`cancel_reason=routine_archived`, `cancelled_by_kind=system`, 이벤트 `cause`는 `routine_archived` 또는 `routine_changed`). 이때도 기본 담당자와 가족에게 같은 취소 알림이 간다. 수락, 넘기기 제안, 위치 확인 등으로 개별 변경된 회차는 그대로 남는다.
 
+루틴 수정으로 개별 변경 없는 미래 회차의 담당이 바뀌면(`open`→`assigned`, `assigned`→`open`, 다른 기본 담당자) 그 회차의 대기 중인 가족 전체 루틴 제안은 `cancelled`(`resolved_by_member_id` 없음)로 거둬진다. 그래서 다른 보호자의 부탁 목록과 차량 카드에서 사라지고, 그 제안으로 `respond_offer`를 부르면 `OFFER_NOT_PENDING`이다. 담당이 바뀔 때마다 시스템 이벤트 `routine_reassigned`(`previous_assignee_id`, `previous_status`, `cause=routine_changed`)가 남는다. 이 이벤트는 알림을 만들지 않는다. 새 기본 담당자는 알림 시점의 루틴 리마인더로 알게 된다. 다시 `open`이 된 회차는 루틴 제안이 아직 없었을 때만 스케줄러가 공지한다. 루틴 제안은 회차마다 한 번만 만들기 때문이다(`routine_offer_created_at`). 그 밖의 경우 보호자가 `open` 회차를 직접 수락한다. 담당이 그대로인 수정(시각, 장소, 알림 시점 등)은 대기 제안을 유지한다.
+
 차량·픽업의 `range.verdict`는 `low`, `sufficient`, `check_required` 중 하나다. `sufficient`는 모든 픽업의 필요 거리를 계산할 수 있고 주행가능거리 값이 6시간 이내일 때만 나온다. 24시간 이내 값으로 부족하면 `low`다. 출발점이 없거나, 값이 없거나, 오래됐는데 부족하지 않으면 `check_required`다. 경고는 24시간 이내 값으로 만들거나 갱신하고, 6시간 이내 값으로 충분할 때 또는 24시간 창에 배정이 없을 때만 닫는다.
 
 저장 장소의 `kind`는 `home`, `school`, `academy`, `other`다. `weekdays`는 월요일을 비트 0으로 하는 7비트 마스크다. 차량 기어는 `P`, `R`, `N`, `D`, `unknown`을 받는다. 차량 상태의 시각은 수집 시각이다. 피드에서 `is_stale`과 `is_demo_value`를 확인할 수 있다.

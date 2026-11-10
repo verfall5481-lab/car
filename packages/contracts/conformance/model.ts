@@ -1,5 +1,6 @@
-// Shared vocabulary of the conformance suite: one scenario table runs against the TypeScript machine
-// (`applyPickupAction`, as the browser demo composes it) and against the SQL RPCs on the real migrations.
+// Shared vocabulary of the conformance suite: one scenario table runs against the TypeScript machine and its
+// composition functions (`applyPickupAction` and src/composition.ts, which the browser demo calls) and against the SQL
+// RPCs on the real migrations.
 // Both drivers report every step as a normalized `Outcome`; `compare.ts` checks it against `Expect` and
 // against the other implementation.
 import type { OfferStatus, PickupStatus } from "../src/index.ts";
@@ -80,8 +81,18 @@ export type ActionSpec =
   | { type: "not_met"; version?: Version }
   /** F-12 "못 가요". */
   | { type: "vehicle_decline"; version?: Version }
-  /** One scheduler pass: `run_escalations` (SQL) and the demo's `setDemoTime` sweep (TS). Actor "system". */
-  | { type: "sweep" };
+  /** One scheduler pass: `run_escalations` (SQL) and `sweepPickup` (TS, the demo's clock). Actor "system". */
+  | { type: "sweep" }
+  /**
+   * A guardian saves the pickup's routine (`upsert_routine` -> `revise_routine`; TS `reviseOccurrence`). Fields left
+   * out keep their value. `shiftMinutes` moves the routine's time; `dropDay` removes the occurrence's weekday.
+   */
+  | {
+    type: "edit_routine"; assignee?: string | null; vehicle?: string | null; place?: string; shiftMinutes?: number;
+    dropDay?: boolean; notifyBeforeMin?: number;
+  }
+  /** A guardian deletes the pickup's routine (`archive_routine`). */
+  | { type: "archive_routine" };
 
 export type ActionType = ActionSpec["type"];
 
@@ -97,7 +108,6 @@ export type SqlStamp = "completedAt" | "cancelledAt" | "expiredAt" | "closedUnco
 /** Facts only the SQL side records; checked against `Expect.sql`, never compared. */
 export type SqlFacts = {
   navStatus: "none" | "requested" | "ok" | "failed";
-  customized: boolean;
   cancelReason: string | null;
   stamps: SqlStamp[];
 };
@@ -111,8 +121,14 @@ export type Outcome = {
   vehicle: string | null;
   version: number;
   round: number;
+  /** Minutes from now to wanted_at, rounded. */
+  wantedInMin: number;
   confirmed: boolean;
   destinationRevision: number;
+  /** SQL `is_customized`; a routine edit leaves a customized occurrence alone. */
+  customized: boolean;
+  /** SQL `routine_offer_created_at` is set: the occurrence was offered to every driver once. */
+  announced: boolean;
   navSession: boolean;
   newNavSession: boolean;
   set: Stamp[];
@@ -127,8 +143,9 @@ export type Outcome = {
 };
 
 export const comparedFields = [
-  "ok", "code", "ignored", "status", "assignee", "vehicle", "version", "round", "confirmed",
-  "destinationRevision", "navSession", "newNavSession", "set", "offer", "resolved", "events", "active", "pickupCount",
+  "ok", "code", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed",
+  "destinationRevision", "customized", "announced", "navSession", "newNavSession", "set", "offer", "resolved", "events",
+  "active", "pickupCount",
 ] as const;
 export type ComparedField = typeof comparedFields[number];
 
@@ -141,8 +158,11 @@ export type Expect = {
   vehicle?: string | null;
   version?: number;
   round?: number;
+  wantedInMin?: number;
   confirmed?: boolean;
   destinationRevision?: number;
+  customized?: boolean;
+  announced?: boolean;
   navSession?: boolean;
   newNavSession?: boolean;
   /** The exact set of `Stamp`s that are set after the step. */
@@ -166,21 +186,14 @@ export type ActStep = {
   pickup?: string;
   do: ActionSpec;
   expect: Expect;
-  /** The step reproduces an entry of `knownDivergences`, in every shape or only in the shapes named. */
-  divergence?: string | Partial<Record<Shape, string>>;
+  /** The step reproduces an entry of `knownDivergences`. */
+  divergence?: string;
   notComparable?: NotComparable;
 };
 export type ClockStep = { clock: number };
 export type ParkStep = { park: string; parked: boolean };
 export type RoleStep = { member: string; canDrive: boolean };
 export type Step = ActStep | ClockStep | ParkStep | RoleStep;
-
-/**
- * "spec": TS pickups carry the family-wide request offer that `create_request` inserts (4.3 #1, 4.4 #2).
- * "demo": TS pickups are built exactly as `apps/web/src/demo-domain.ts` builds them (no request offer); offers
- * without a sender are then left out of the comparison on both sides.
- */
-export type Shape = "spec" | "demo";
 
 export type Scenario = {
   name: string;
@@ -189,14 +202,13 @@ export type Scenario = {
   /** Expectations on each pickup right after it is created. */
   created?: Partial<Record<string, Expect>>;
   steps: readonly Step[];
-  shapes?: readonly Shape[];
   /** Applies to every step of the scenario. */
   notComparable?: NotComparable;
 };
 
 export type KnownDivergence = {
   id: string;
-  /** The side that does not meet the scenario's expectation: SQL, or the demo composition the TS driver mirrors. */
+  /** The side that does not meet the scenario's expectation. */
   wrong: "sql" | "ts";
   spec: string;
   summary: string;

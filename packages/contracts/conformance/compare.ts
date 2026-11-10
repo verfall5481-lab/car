@@ -11,7 +11,6 @@ import type {
   Outcome,
   Run,
   Scenario,
-  Shape,
 } from "./model.ts";
 
 type Side = "ts" | "sql";
@@ -23,7 +22,6 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
     reason: "PickupOffer records only acceptedBy; SQL resolved_by_member_id also names who declined or withdrew.",
   },
   { field: "sql.navStatus", reason: "TS has no nav_status and no report_nav_result; the demo keeps navigation failure on the car." },
-  { field: "sql.customized", reason: "TS has no is_customized; routine revision lives only in SQL." },
   {
     field: "sql.cancelReason",
     reason: "TS neither stores nor checks the reason at run time (only its type does); SQL maps and validates it.",
@@ -34,17 +32,17 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
   },
   { field: "creation events", reason: "SQL writes `created`; the demo writes a `requested` history row, not a PickupEvent." },
   {
-    field: "offers without a sender (demo shape)",
-    reason: "demo-domain.ts makePickup creates requests without the family-wide request offer of create_request.",
-  },
-  {
     field: "report_nav_result",
     reason: "SQL only. The TS driver treats it as a no-op; those steps compare state, and their events are marked per step.",
   },
   {
-    field: "routine recompute and member removal",
-    reason: "SQL only (revise_routine with routine_reassigned, 4.4 #12; leave_family/remove_member with member_reassigned). " +
-      "TS has no such actions and the demo's routine editor does not recompute occurrences.",
+    field: "member removal",
+    reason: "SQL only (leave_family/remove_member with member_reassigned); TS has no such action and the demo none either.",
+  },
+  {
+    field: "occurrence generation",
+    reason: "SQL makes occurrences up to two days ahead (ensure_occurrences); the demo makes today's at its notify time. " +
+      "Scenarios create each occurrence as setup, so only what happens to it is compared.",
   },
   {
     field: "parked state",
@@ -53,34 +51,10 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
   },
   {
     field: "request preconditions",
-    reason: "Request creation is setup: SQL's 3-per-10-minutes limit and ACTIVE_REQUEST_EXISTS, and the demo's NO_DRIVER and " +
-      "ACTIVE_REQUEST checks, are not compared.",
-  },
-  {
-    field: "vehicle_decline and the scheduler",
-    reason: "Neither is in packages/contracts. The TS driver mirrors apps/web (vehicle.tsx cannotGo/answerOffer, " +
-      "demo-domain.ts setDemoTime); SQL runs vehicle_decline and run_escalations.",
+    reason: "Request creation is setup: SQL's 3-per-10-minutes limit and ACTIVE_REQUEST_EXISTS, and the demo's " +
+      "ACTIVE_REQUEST check, are not compared.",
   },
 ];
-
-/** In the demo shape the TS side has no family-wide offers, so neither side's are compared. */
-function shaped(outcome: Outcome, shape: Shape): Outcome {
-  if (shape === "spec") return outcome;
-  return {
-    ...outcome,
-    offer: outcome.offer?.from === null ? null : outcome.offer,
-    resolved: outcome.resolved?.from === null ? null : outcome.resolved,
-  };
-}
-
-function shapedExpect(expect: Expect, shape: Shape): Expect {
-  if (shape === "spec") return expect;
-  return {
-    ...expect,
-    offer: expect.offer?.from === null ? null : expect.offer,
-    resolved: expect.resolved?.from === null ? null : expect.resolved,
-  };
-}
 
 function show(value: unknown): string {
   return JSON.stringify(value);
@@ -90,9 +64,7 @@ function sorted<T>(values: readonly T[]): T[] {
   return [...values].sort();
 }
 
-export function expectationErrors(raw: Outcome, rawExpect: Expect, side: Side, shape: Shape): string[] {
-  const outcome = shaped(raw, shape);
-  const expect = shapedExpect(rawExpect, shape);
+export function expectationErrors(outcome: Outcome, expect: Expect, side: Side): string[] {
   const errors: string[] = [];
   const mismatch = (field: string, expected: unknown, actual: unknown) => {
     if (!isDeepStrictEqual(expected, actual)) errors.push(`${side} ${field}: expected ${show(expected)}, got ${show(actual)}`);
@@ -103,8 +75,8 @@ export function expectationErrors(raw: Outcome, rawExpect: Expect, side: Side, s
     mismatch("code", expect.code, outcome.ok ? "ok" : outcome.code);
   }
   const scalars = [
-    "ignored", "status", "assignee", "vehicle", "version", "round", "confirmed", "destinationRevision",
-    "navSession", "newNavSession", "pickupCount",
+    "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed", "destinationRevision",
+    "customized", "announced", "navSession", "newNavSession", "pickupCount",
   ] as const;
   for (const field of scalars) {
     if (expect[field] !== undefined) mismatch(field, expect[field], outcome[field]);
@@ -148,9 +120,7 @@ export function expectationErrors(raw: Outcome, rawExpect: Expect, side: Side, s
   return errors;
 }
 
-export function differences(rawTs: Outcome, rawSql: Outcome, skip: NotComparable, shape: Shape): string[] {
-  const ts = shaped(rawTs, shape);
-  const sql = shaped(rawSql, shape);
+export function differences(ts: Outcome, sql: Outcome, skip: NotComparable): string[] {
   const found: string[] = [];
   for (const field of comparedFields) {
     if (skip[field] !== undefined) continue;
@@ -173,18 +143,18 @@ function describe(step: ActStep, index: number): string {
 
 export type Verdict = { failures: string[]; tolerated: string[] };
 
-export function judge(scenario: Scenario, shape: Shape, ts: Run, sql: Run, known: readonly KnownDivergence[]): Verdict {
+export function judge(scenario: Scenario, ts: Run, sql: Run, known: readonly KnownDivergence[]): Verdict {
   const failures: string[] = [];
   const tolerated: string[] = [];
   for (const { key } of scenario.pickups) {
     const label = `created ${key}`;
     const expect = scenario.created?.[key];
     if (expect) {
-      failures.push(...expectationErrors(ts.created[key], expect, "ts", shape).map((error) => `${label}: ${error}`));
-      failures.push(...expectationErrors(sql.created[key], expect, "sql", shape).map((error) => `${label}: ${error}`));
+      failures.push(...expectationErrors(ts.created[key], expect, "ts").map((error) => `${label}: ${error}`));
+      failures.push(...expectationErrors(sql.created[key], expect, "sql").map((error) => `${label}: ${error}`));
     }
     const skip: NotComparable = { ...scenario.notComparable, events: "creation events", resolved: "no prior offer" };
-    failures.push(...differences(ts.created[key], sql.created[key], skip, shape).map((diff) => `${label}: ${diff}`));
+    failures.push(...differences(ts.created[key], sql.created[key], skip).map((diff) => `${label}: ${diff}`));
   }
   scenario.steps.forEach((step, index) => {
     if (!isAct(step)) return;
@@ -193,11 +163,11 @@ export function judge(scenario: Scenario, shape: Shape, ts: Run, sql: Run, known
     if (!tsOutcome || !sqlOutcome) throw new Error(`step ${index + 1} has no outcome`);
     const label = describe(step, index);
     const skip: NotComparable = { ...scenario.notComparable, ...step.notComparable };
-    const tsErrors = expectationErrors(tsOutcome, step.expect, "ts", shape);
-    const sqlErrors = expectationErrors(sqlOutcome, step.expect, "sql", shape);
-    const diffs = differences(tsOutcome, sqlOutcome, skip, shape);
+    const tsErrors = expectationErrors(tsOutcome, step.expect, "ts");
+    const sqlErrors = expectationErrors(sqlOutcome, step.expect, "sql");
+    const diffs = differences(tsOutcome, sqlOutcome, skip);
     const prefixed = (lines: string[]) => lines.map((line) => `${label}: ${line}`);
-    const divergence = typeof step.divergence === "string" ? step.divergence : step.divergence?.[shape];
+    const divergence = step.divergence;
     if (!divergence) {
       failures.push(...prefixed([...tsErrors, ...sqlErrors, ...diffs]));
       return;
@@ -215,7 +185,7 @@ export function judge(scenario: Scenario, shape: Shape, ts: Run, sql: Run, known
       failures.push(`${label}: known divergence "${entry.id}" no longer reproduces; remove it from knownDivergences`);
       return;
     }
-    tolerated.push(`${entry.id} at ${label} [${shape}]: ${[...wrongErrors, ...diffs].join("; ")}`);
+    tolerated.push(`${entry.id} at ${label}: ${[...wrongErrors, ...diffs].join("; ")}`);
   });
   return { failures, tolerated };
 }

@@ -291,6 +291,14 @@ test("as in SQL, a car acts only on its trip, an open pickup, its driver's assig
   // 8.3.1: from a handoff card, an offer that is not valid for this driver is NO_VALID_OFFER; an ended trip is not startable.
   rejected(act({ ...moms, status: "assigned" }, car, { ...start, offerId: "gone" }), "NO_VALID_OFFER");
   rejected(act({ ...moms, status: "completed" }, car, start), "INVALID_STATE");
+  rejected(act({ ...moms, offer: { id: "o", status: "pending", fromMemberId: mom.id, toMemberId: dad.id, expiresAt: now + 60_000,
+    declinedBy: [] } }, car, { ...start, offerId: "o" }), "INVALID_STATE");
+  // 4.5: the card's version does not matter for that answer, nor does an unconfirmed location; it does elsewhere.
+  rejected(act({ ...moms, status: "assigned" }, car, { ...start, expectedVersion: 1 }), "ALREADY_TAKEN");
+  const unconfirmed = { ...moms.destination, confirmed: false };
+  rejected(act({ ...moms, status: "assigned", destination: unconfirmed }, car, start), "ALREADY_TAKEN");
+  rejected(act({ ...moms, status: "assigned" }, car, { ...start, expectedVersion: 1, offerId: "gone" }), "STALE_VERSION");
+  rejected(act(pickup({ version: 2 }), car, { ...start, expectedVersion: 1 }), "STALE_VERSION");
   // A car whose driver cannot drive acts on nothing it is not assigned to.
   const passengerCar = { kind: "vehicle", id: "passenger-car", driverId: "passenger", parked: true } as const;
   rejected(act(pickup(), passengerCar, { type: "accept" }), "NOT_FOUND");

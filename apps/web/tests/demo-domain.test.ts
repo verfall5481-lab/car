@@ -137,18 +137,19 @@ test('the demo clock offers an open occurrence to every driver at its notify tim
   seed.routines[1] = { ...seed.routines[1], days: [weekdayAt(now)], time: '17:30' };
   assert.equal(setDemoTime(seed, now).pickups.length, 0);
   const announced = setDemoTime(seed, now + 8 * minute);
-  const occurrence = announced.pickups[0];
+  const music = (state: DemoState) => state.pickups.find((pickup) => state.occurrences[pickup.id] === 'music')!;
+  const occurrence = music(announced);
   assert.equal(occurrence.status, 'open');
   assert.equal(occurrence.offer?.status, 'pending');
   assert.equal(occurrence.offer?.fromMemberId, null);
   assert.equal(occurrence.offer?.expiresAt, occurrence.wantedAt);
   const lapsed = setDemoTime(announced, occurrence.wantedAt);
-  assert.equal(lapsed.pickups[0].offer?.status, 'expired');
-  assert.ok(lapsed.history.some((event) => event.event === 'offer_expired'));
-  assert.equal(setDemoTime(lapsed, occurrence.wantedAt + 5 * minute).pickups[0].offer?.status, 'expired');
+  assert.equal(music(lapsed).offer?.status, 'expired');
+  assert.ok(lapsed.history.some((event) => event.event === 'offer_expired' && event.pickupId === occurrence.id));
+  assert.equal(music(setDemoTime(lapsed, occurrence.wantedAt + 5 * minute)).offer?.status, 'expired');
 });
 
-test('"못 가요" records the driver's refusal; the last eligible driver closes the request offer (F-12, 8.7)', () => {
+test('"못 가요" records the refusal of the driver; the last eligible driver closes the request offer (F-12, 8.7)', () => {
   const declined = ok(declineFromCar(request(), 'pickup', car, 1, now, 'offer'));
   assert.equal(declined.pickups[0].offer?.status, 'pending');
   assert.deepEqual(declined.pickups[0].offer?.declinedBy, [dad.id]);

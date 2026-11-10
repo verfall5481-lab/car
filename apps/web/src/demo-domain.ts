@@ -1,5 +1,11 @@
-import { applyPickupAction, canRequestPickup, distanceMetres, isActivePickup, isCoordinates, requestRecipients, resolveDestination } from '@deriro/contracts';
-import type { Actor, Coordinates, Destination, LocationInput, Member, Pickup, PickupAction, PickupEvent, PickupPoint, Place, Requester, Vehicle } from '@deriro/contracts';
+import {
+  applyPickupAction, canRequestPickup, declineFromVehicle, distanceMetres, guidanceAfter, isActivePickup, isCoordinates,
+  newOccurrencePickup, newRequestPickup, resolveDestination, reviseOccurrence, sweepPickup,
+} from '@deriro/contracts';
+import type {
+  Actor, Coordinates, Destination, LocationInput, Member, OccurrencePlan, Pickup, PickupAction, PickupEvent, PickupPoint,
+  PickupResult, Place, Requester, Vehicle,
+} from '@deriro/contracts';
 
 export type Person = Member & { name: string; phone?: string };
 export type Rider = { id: string; familyId: string; name: string; phone?: string; kind: 'child' | 'adult'; connected: boolean; archivedAt?: number | null };
@@ -25,8 +31,13 @@ export type VehicleCardFacts = {
 export type VehicleAlertFacts = { id: string; requiredKm: number; rangeKm: number; pickupCount: number };
 /** Live `/v/` only. The demo derives cards from its own data; the live feed already decided them. */
 export type VehicleFeedFacts = { cards: Record<string, VehicleCardFacts>; alert: VehicleAlertFacts | null };
+/**
+ * 2: requests carry their family-wide offer and occurrences their notify time, as on the server. A stored demo of an
+ * older schema starts afresh. Live states are never stored and keep 1.
+ */
+export const demoSchema = 2;
 export type DemoState = {
-  schema: 1; startedAt: number; advance: number; familyName: string; live?: boolean; vehicles?: DemoVehicle[]; terminalAt?: Record<string, number>; departureAt?: Record<string, number>;
+  schema: 1 | typeof demoSchema; startedAt: number; advance: number; familyName: string; live?: boolean; vehicles?: DemoVehicle[]; terminalAt?: Record<string, number>; departureAt?: Record<string, number>;
   pickupCapabilities?: Record<string, { cancel?: boolean; notMet?: boolean; ready?: boolean; escalation?: number; coordinates?: boolean }>;
   vehicleFeed?: VehicleFeedFacts;
   smsFailures?: number;
@@ -43,7 +54,7 @@ export const exampleGps = { source: 'gps', lat: 37.4981, lng: 127.0441, accuracy
 
 export function freshDemo(startedAt = Date.now()): DemoState {
   return {
-    schema: 1, startedAt, advance: 0, familyName: '우리 가족', notifications: true, sms: false,
+    schema: demoSchema, startedAt, advance: 0, familyName: '우리 가족', notifications: true, sms: false,
     members: [
       { id: 'mom', familyId, name: '엄마', canDrive: true, canRequest: true },
       { id: 'dad', familyId, name: '아빠', canDrive: true, canRequest: true },
@@ -127,10 +138,6 @@ export function nearbyPlaces(state: DemoState, point: Coordinates) {
     .sort((a, b) => a.distance - b.distance).slice(0, 2);
 }
 
-function makePickup(id: string, requester: Requester, destination: Destination, wantedAt: number, source: Pickup['source'], assigneeId: string | null = null, vehicleId: string | null = null): Pickup {
-  return { id, familyId, requester, destination, wantedAt, source, assigneeId, vehicleId, status: assigneeId ? 'assigned' : 'open', assignmentRound: assigneeId ? 1 : 0, version: 1, destinationRevision: 1, acceptedAt: null, navigation: null, offer: null, readyAt: null, notMetAt: null };
-}
-
 const fail = (state: DemoState, code: string): Change => ({ ok: false, code, state });
 export const changed = (state: DemoState): Change => ({ ok: true, state });
 
@@ -184,49 +191,103 @@ export function setVehicleDriver(state: DemoState, driverId: string): Change {
   return changed({ ...state, vehicle: { ...state.vehicle, currentDriverId: driverId } });
 }
 
+/**
+ * `rider_create_request` / `member_create_request`: an open request with its family-wide offer. Like the server, a
+ * request is not refused when nobody can drive right now; it escalates and expires as any open request does (F-15).
+ */
 export function createRequest(state: DemoState, requester: Requester, location: LocationInput, minutes: number, now: number, id: string): Change {
   if (!canRequestPickup(requester, familyId, state.members, state.riders)) return fail(state, 'FORBIDDEN');
-  if (!requestRecipients({ familyId, requester }, state.members, [state.vehicle]).memberIds.length) return fail(state, 'NO_DRIVER');
   if (state.pickups.some((p) => p.source === 'request' && p.requester.id === requester.id && isActivePickup(p))) return fail(state, 'ACTIVE_REQUEST');
   const destination = resolveDestination(familyId, location, state.places, state.points);
   if (!destination || ![0, 10, 20, 30].includes(minutes)) return fail(state, 'VALIDATION');
-  const pickup = makePickup(id, requester, destination, now + minutes * minute, 'request');
+  const pickup = newRequestPickup({ id, familyId, requester, destination, wantedAt: now + minutes * minute });
   return changed({ ...state, pickups: [pickup, ...state.pickups], history: [{ at: now, pickupId: id, event: 'requested', actor: requester.id }, ...state.history] });
 }
 
+/** `ensure_occurrences` for today's occurrence of a routine. */
 export function routineOccurrence(state: DemoState, routine: Routine, now: number, id: string): Change {
   if (!demoRoutinesToday(state, now).some((item) => item.id === routine.id)) return fail(state, 'ROUTINE_ALREADY');
   const destination = resolveDestination(familyId, { source: 'saved_place', placeId: routine.placeId }, state.places);
   if (!destination) return fail(state, 'VALIDATION');
-  const wantedAt = routineWanted(routine, now);
-  const pickup = makePickup(id, routine.requester, destination, wantedAt, 'routine', routine.assigneeId || null, routine.vehicleId || null);
+  const pickup = newOccurrencePickup({
+    id, familyId, requester: routine.requester, destination, wantedAt: routineWanted(routine, now),
+    assigneeId: routine.assigneeId || null, vehicleId: routine.vehicleId || null, notifyBeforeMin: routine.before,
+  }, { members: state.members, vehicles: [state.vehicle] });
   return changed({ ...state, pickups: [...state.pickups, pickup], occurrences: { ...state.occurrences, [id]: routine.id }, history: [{ at: now, pickupId: id, event: 'requested', actor: 'system' }, ...state.history] });
 }
 
 export type ActionOptions = { confirmedSwitch?: boolean; detail?: string };
 
-export function applyDemoAction(state: DemoState, pickupId: string, actor: Actor, action: PickupAction, now: number, options: ActionOptions = {}): Change {
-  const pickup = state.pickups.find(({ id }) => id === pickupId);
-  if (!pickup) return fail(state, 'NOT_FOUND');
-  if (actor.kind === 'vehicle' && (!vehiclePaired(state.vehicle) || actor.id !== state.vehicle.id)) return fail(state, 'FORBIDDEN');
-  if (actor.kind === 'vehicle' && !state.vehicle.online) return fail(state, 'OFFLINE');
-  if (action.type === 'vehicle_start' && state.vehicle.activePickupId && state.vehicle.activePickupId !== pickup.id && !options.confirmedSwitch) return fail(state, 'VEHICLE_BUSY');
-  const result = applyPickupAction(pickup, actor, action, { now, members: state.members, vehicles: [state.vehicle] });
-  if (result.pickup === pickup && !result.events.length) return result.ok ? { ok: true, state, ignored: result.ignored } : fail(state, result.code);
-  let vehicle = state.vehicle;
-  if (result.ok && action.type === 'vehicle_start' && result.pickup.navigation) {
-    vehicle = { ...vehicle, activePickupId: pickup.id, activeSessionId: result.pickup.navigation.sessionId, activeDestinationRevision: result.pickup.destinationRevision, navError: vehicle.navFails };
-  }
-  if (vehicle.activePickupId === pickup.id && (!isActivePickup(result.pickup) || result.ok && action.type === 'undo_en_route')) {
-    vehicle = { ...vehicle, activePickupId: null, activeSessionId: null, activeDestinationRevision: null, navError: false };
-  }
+function context(state: DemoState, now: number) {
+  return { now, members: state.members, vehicles: [state.vehicle] };
+}
+
+/** Stores a result as the server would: the pickup (also when rejected), the car's guidance and the history rows. */
+function record(state: DemoState, before: Pickup, actor: Actor, type: string, result: PickupResult, now: number, detail?: string): Change {
+  if (result.pickup === before && !result.events.length) return result.ok ? { ok: true, state, ignored: result.ignored } : fail(state, result.code);
+  const guidance = guidanceAfter(state.vehicle, actor, { type }, result);
+  const vehicle = guidance ? { ...state.vehicle, ...guidance, navError: guidance.activePickupId ? state.vehicle.navFails : false } : state.vehicle;
   const actorId = actor.kind === 'vehicle' ? actor.driverId : actor.kind === 'system' ? 'system' : actor.id;
-  const updated = { ...state, vehicle, pickups: state.pickups.map((p) => p.id === pickupId ? result.pickup : p), history: [
-    ...result.events.filter((event) => event !== 'arrival_ignored' && event !== 'navigation_requested').map((event) => ({ pickupId, at: now, event, actor: actorId, detail: options.detail })), ...state.history,
-  ] };
+  const rows = result.events.filter((event) => event !== 'arrival_ignored' && event !== 'navigation_requested')
+    .map((event) => ({ pickupId: before.id, at: now, event, actor: actorId, detail }));
+  const updated = { ...state, vehicle, pickups: state.pickups.map((p) => p.id === before.id ? result.pickup : p), history: [...rows, ...state.history] };
   return result.ok ? { ok: true, state: updated, ignored: result.ignored } : fail(updated, result.code);
 }
 
+function vehicleRefusal(state: DemoState, actor: Actor): Change | null {
+  if (actor.kind !== 'vehicle') return null;
+  if (!vehiclePaired(state.vehicle) || actor.id !== state.vehicle.id) return fail(state, 'FORBIDDEN');
+  return state.vehicle.online ? null : fail(state, 'OFFLINE');
+}
+
+export function applyDemoAction(state: DemoState, pickupId: string, actor: Actor, action: PickupAction, now: number, options: ActionOptions = {}): Change {
+  const pickup = state.pickups.find(({ id }) => id === pickupId);
+  if (!pickup) return fail(state, 'NOT_FOUND');
+  const refused = vehicleRefusal(state, actor);
+  if (refused) return refused;
+  if (action.type === 'vehicle_start' && state.vehicle.activePickupId && state.vehicle.activePickupId !== pickup.id && !options.confirmedSwitch) return fail(state, 'VEHICLE_BUSY');
+  const result = applyPickupAction(pickup, actor, action, context(state, now));
+  return record(state, pickup, actor, action.type, result, now, options.detail);
+}
+
+/** F-12 "못 가요" from the car, as `vehicle_decline`. */
+export function declineFromCar(state: DemoState, pickupId: string, actor: Actor, expectedVersion: number, now: number, offerId: string): Change {
+  const pickup = state.pickups.find(({ id }) => id === pickupId);
+  if (!pickup) return fail(state, 'NOT_FOUND');
+  const refused = vehicleRefusal(state, actor);
+  if (refused) return refused;
+  const result = declineFromVehicle(pickup, actor, { expectedVersion, offerId }, context(state, now));
+  return record(state, pickup, actor, 'vehicle_decline', result, now);
+}
+
+/** Where an occurrence of a routine goes now: its day at the routine's time and place, or nowhere. */
+function occurrencePlan(state: DemoState, routine: Routine, pickup: Pickup): OccurrencePlan | null {
+  if (!routine.days.includes(weekdayAt(pickup.wantedAt))) return null;
+  const destination = resolveDestination(familyId, { source: 'saved_place', placeId: routine.placeId }, state.places);
+  if (!destination) return null;
+  return {
+    wantedAt: routineWanted(routine, pickup.wantedAt), destination, requester: routine.requester,
+    assigneeId: routine.assigneeId || null, vehicleId: routine.vehicleId || null, notifyBeforeMin: routine.before,
+  };
+}
+
+/**
+ * `revise_routine` after a routine is saved (`archived` when it is deleted): its non-customized upcoming occurrences
+ * follow it or are cancelled by the system; occurrences someone accepted, handed off or changed stay (S-16, S-28).
+ * A paused routine changes nothing, as on the server.
+ */
+export function reviseRoutine(state: DemoState, routine: Routine, now: number, archived = false): DemoState {
+  if (!archived && !routine.enabled) return state;
+  let next = state;
+  for (const pickup of state.pickups) {
+    if (state.occurrences[pickup.id] !== routine.id) continue;
+    const plan = archived ? null : occurrencePlan(state, routine, pickup);
+    next = record(next, pickup, { kind: 'system' }, 'revise_routine', reviseOccurrence(pickup, plan, context(next, now)), now).state;
+  }
+  return next;
+}
+
+/** The demo clock: today's occurrences at their notify time, then one scheduler pass over every pickup (9장). */
 export function setDemoTime(state: DemoState, now: number): DemoState {
   let next = state;
   for (const routine of demoRoutinesToday(state, now)) {
@@ -236,17 +297,7 @@ export function setDemoTime(state: DemoState, now: number): DemoState {
     }
   }
   for (const pickup of next.pickups) {
-    if (pickup.status === 'open' && now >= pickup.wantedAt + 60 * minute) {
-      next = applyDemoAction(next, pickup.id, { kind: 'system' }, { type: 'expire' }, now).state;
-    } else if (pickup.status === 'arrived' && pickup.arrivedAt != null && now >= pickup.arrivedAt + 180 * minute) {
-      next = applyDemoAction(next, pickup.id, { kind: 'system' }, { type: 'close_unconfirmed' }, now).state;
-    } else if (pickup.offer?.status === 'pending' && pickup.offer.expiresAt <= now) {
-      next = {
-        ...next,
-        pickups: next.pickups.map((item) => item.id === pickup.id && item.offer ? { ...item, offer: { ...item.offer, status: 'expired' } } : item),
-        history: [{ at: now, pickupId: pickup.id, event: 'offer_expired', actor: 'system' }, ...next.history],
-      };
-    }
+    next = record(next, pickup, { kind: 'system' }, 'sweep', sweepPickup(pickup, context(next, now)), now).state;
   }
   return next;
 }

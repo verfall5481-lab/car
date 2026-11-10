@@ -144,7 +144,13 @@ export function declineFromVehicle(pickup: Pickup, actor: Actor, action: Vehicle
 }
 
 /** Where an occurrence of an edited routine now goes; `null` when the routine no longer has it. */
-export type OccurrencePlan = Holder & { wantedAt: number; destination: Destination; notifyBeforeMin: number };
+export type OccurrencePlan = Holder & {
+  wantedAt: number;
+  destination: Destination;
+  notifyBeforeMin: number;
+  /** The routine's rider, when the edit changed who is picked up. */
+  requester?: Requester;
+};
 
 function sameDestination(a: Destination, b: Destination): boolean {
   return a.lat === b.lat && a.lng === b.lng && a.label === b.label && a.source === b.source && a.note === b.note &&
@@ -173,7 +179,8 @@ export function reviseOccurrence(pickup: Pickup, plan: OccurrencePlan | null, co
       events: ["cancelled"],
     };
   }
-  const holder = routineHolder({ ...pickup, assigneeId: plan.assigneeId, vehicleId: plan.vehicleId }, context);
+  const requester = plan.requester ?? pickup.requester;
+  const holder = routineHolder({ ...pickup, requester, assigneeId: plan.assigneeId, vehicleId: plan.vehicleId }, context);
   const reassigned = holder.assigneeId !== pickup.assigneeId;
   const destination = { ...plan.destination, confirmed: true };
   const moved = !sameDestination(pickup.destination, destination);
@@ -182,6 +189,7 @@ export function reviseOccurrence(pickup: Pickup, plan: OccurrencePlan | null, co
     plan.wantedAt !== pickup.wantedAt || !pickup.destination.confirmed;
   const next: Pickup = {
     ...current,
+    requester,
     status,
     assigneeId: holder.assigneeId,
     vehicleId: holder.vehicleId,

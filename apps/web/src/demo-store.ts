@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { changed, demoNow, freshDemo, setDemoTime } from './demo-domain.ts';
+import { changed, demoNow, demoSchema, freshDemo, setDemoTime } from './demo-domain.ts';
 import type { Change, DemoState } from './demo-domain.ts';
 
 const storageKey = 'deriro:local-demo:v1';
@@ -11,7 +11,7 @@ function read(): DemoState | undefined {
     const raw = localStorage.getItem(storageKey);
     if (!raw) return undefined;
     const value = JSON.parse(raw) as DemoState;
-    return value.schema === 1 && Array.isArray(value.pickups) ? value : undefined;
+    return value.schema === demoSchema && Array.isArray(value.pickups) ? value : undefined;
   } catch {
     return undefined;
   }

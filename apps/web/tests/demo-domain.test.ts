@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Actor, PickupAction } from '@deriro/contracts';
-import { applyDemoAction, createRequest, demoStart, exampleGps, freshDemo, minute, pairVehicle, renewPairCode, routineOccurrence, setDemoTime, setVehicleDriver, unpairVehicle, vehiclePaired } from '../src/demo-domain.ts';
+import { applyDemoAction, createRequest, declineFromCar, demoStart, exampleGps, freshDemo, minute, pairVehicle, renewPairCode, reviseRoutine, routineOccurrence, setDemoTime, setVehicleDriver, unpairVehicle, vehiclePaired, weekdayAt } from '../src/demo-domain.ts';
 import type { Change, DemoState } from '../src/demo-domain.ts';
 
 const rider = { kind: 'rider', id: 'minjun' } as const;
@@ -109,4 +109,71 @@ test('driver changes only to an eligible member and never mid-trip (V-09)', () =
   state = act(state, { ...car, driverId: 'mom' }, { type: 'vehicle_start', expectedVersion: state.pickups[0].version, sessionId: 's', actionId: 'a' });
   const busy = setVehicleDriver(state, 'dad');
   assert.equal(busy.ok ? '' : busy.code, 'VEHICLE_BUSY');
+});
+
+test('requests carry their family-wide offer and are not refused while nobody can drive (4.3 #1, F-08)', () => {
+  const offer = request().pickups[0].offer;
+  assert.equal(offer?.status, 'pending');
+  assert.equal(offer?.fromMemberId, null);
+  assert.equal(offer?.toMemberId, null);
+  assert.equal(offer?.expiresAt, now + 60 * minute);
+  const nobody = freshDemo();
+  nobody.members = nobody.members.map((member) => ({ ...member, canDrive: false }));
+  assert.equal(createRequest(nobody, rider, point, 0, now, 'pickup').ok, true);
+});
+
+test('an occurrence carries its routine notify time, which bounds a handoff on it (F-11)', () => {
+  const seed = freshDemo();
+  seed.routines[0] = { ...seed.routines[0], before: 30 };
+  let state = ok(routineOccurrence(seed, seed.routines[0], now, 'pickup'));
+  assert.equal(state.pickups[0].notifyBeforeMin, 30);
+  state = act(state, dad, { type: 'offer', expectedVersion: 1, offerId: 'offer', toMemberId: mom.id });
+  // 17:30 - 30 minutes has passed at 17:02, so the 5-minute fallback applies (with 20 it would be 17:10).
+  assert.equal(state.pickups[0].offer?.expiresAt, now + 5 * minute);
+});
+
+test('the demo clock offers an open occurrence to every driver at its notify time, once (4.4 #4, F-15)', () => {
+  const seed = freshDemo();
+  seed.routines[1] = { ...seed.routines[1], days: [weekdayAt(now)], time: '17:30' };
+  assert.equal(setDemoTime(seed, now).pickups.length, 0);
+  const announced = setDemoTime(seed, now + 8 * minute);
+  const occurrence = announced.pickups[0];
+  assert.equal(occurrence.status, 'open');
+  assert.equal(occurrence.offer?.status, 'pending');
+  assert.equal(occurrence.offer?.fromMemberId, null);
+  assert.equal(occurrence.offer?.expiresAt, occurrence.wantedAt);
+  const lapsed = setDemoTime(announced, occurrence.wantedAt);
+  assert.equal(lapsed.pickups[0].offer?.status, 'expired');
+  assert.ok(lapsed.history.some((event) => event.event === 'offer_expired'));
+  assert.equal(setDemoTime(lapsed, occurrence.wantedAt + 5 * minute).pickups[0].offer?.status, 'expired');
+});
+
+test('"못 가요" records the driver's refusal; the last eligible driver closes the request offer (F-12, 8.7)', () => {
+  const declined = ok(declineFromCar(request(), 'pickup', car, 1, now, 'offer'));
+  assert.equal(declined.pickups[0].offer?.status, 'pending');
+  assert.deepEqual(declined.pickups[0].offer?.declinedBy, [dad.id]);
+  assert.ok(declined.history.some((event) => event.event === 'request_declined' && event.actor === dad.id));
+  let own = ok(createRequest(freshDemo(), mom, point, 0, now, 'pickup'));
+  own = ok(declineFromCar(own, 'pickup', car, 1, now, 'offer'));
+  assert.equal(own.pickups[0].status, 'open');
+  assert.equal(own.pickups[0].offer?.status, 'declined');
+  // 4.3 #3: the driver who declined may still accept.
+  assert.equal(act(own, dad, { type: 'accept' }).pickups[0].assigneeId, dad.id);
+});
+
+test('a routine edit moves its untouched occurrences, keeps accepted ones, and a delete cancels the rest (4.4 #12, S-28)', () => {
+  const seed = freshDemo();
+  const state = ok(routineOccurrence(seed, seed.routines[0], now, 'pickup'));
+  const toMom = { ...seed.routines[0], assigneeId: mom.id, vehicleId: '', time: '17:40' };
+  const moved = reviseRoutine(state, toMom, now);
+  assert.equal(moved.pickups[0].assigneeId, mom.id);
+  assert.equal(moved.pickups[0].vehicleId, null);
+  assert.equal(moved.pickups[0].wantedAt, state.pickups[0].wantedAt + 10 * minute);
+  assert.equal(moved.pickups[0].assignmentRound, 2);
+  assert.ok(moved.history.some((event) => event.event === 'routine_reassigned' && event.actor === 'system'));
+  const accepted = act(state, dad, { type: 'accept' });
+  assert.equal(reviseRoutine(accepted, toMom, now).pickups[0].assigneeId, dad.id);
+  assert.equal(reviseRoutine(state, seed.routines[0], now, true).pickups[0].status, 'cancelled');
+  assert.equal(reviseRoutine(accepted, seed.routines[0], now, true).pickups[0].status, 'assigned');
+  assert.equal(reviseRoutine(state, { ...toMom, enabled: false }, now), state);
 });

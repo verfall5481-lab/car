@@ -282,10 +282,15 @@ test("as in SQL, a car acts only on its trip, an open pickup, its driver's assig
   rejected(act(moms, parkedCar, { type: "confirm_location", expectedVersion: 3, destination: moved }), "NOT_FOUND");
   rejected(act(moms, parkedCar, { type: "arrive", source: "manual", expectedVersion: 3 }), "NOT_FOUND");
   rejected(act({ ...moms, status: "arrived" }, parkedCar, { type: "board", expectedVersion: 3 }), "NOT_FOUND");
-  // F-10 and 8.3.1 still name the outcome for a car that lost the race.
+  // F-10 and V-03: a car that lost the race hears who took it, from a request card (no offer ID) at any stage.
   rejected(act(moms, car, { type: "accept" }), "ALREADY_TAKEN");
-  rejected(act({ ...moms, status: "assigned" }, car, { type: "vehicle_start", expectedVersion: 3, actionId: "a", sessionId: "s" }),
-    "NO_VALID_OFFER");
+  const start = { type: "vehicle_start", expectedVersion: 3, actionId: "a", sessionId: "s" } as const;
+  rejected(act(moms, car, start), "ALREADY_TAKEN");
+  rejected(act({ ...moms, status: "assigned" }, car, start), "ALREADY_TAKEN");
+  rejected(act({ ...moms, status: "arrived" }, car, start), "ALREADY_TAKEN");
+  // 8.3.1: from a handoff card, an offer that is not valid for this driver is NO_VALID_OFFER; an ended trip is not startable.
+  rejected(act({ ...moms, status: "assigned" }, car, { ...start, offerId: "gone" }), "NO_VALID_OFFER");
+  rejected(act({ ...moms, status: "completed" }, car, start), "INVALID_STATE");
   // A car whose driver cannot drive acts on nothing it is not assigned to.
   const passengerCar = { kind: "vehicle", id: "passenger-car", driverId: "passenger", parked: true } as const;
   rejected(act(pickup(), passengerCar, { type: "accept" }), "NOT_FOUND");

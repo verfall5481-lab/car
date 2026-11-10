@@ -527,6 +527,13 @@ begin
         pickup := deriro_private.expire_pickup(pickup);
         return deriro_private.err('PICKUP_EXPIRED', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup)));
       end if;
+      -- Pressed on a request or routine card (no offer) after someone else took the trip: the car lost the race and
+      -- hears who won, as accept_pickup does (V-03, S-02). With an offer ID the handoff rules below apply (8.3.1).
+      if offer_id is null and pickup.status in ('assigned', 'en_route', 'arrived')
+        and pickup.assignee_member_id is distinct from actor.member_id then
+        return deriro_private.err('ALREADY_TAKEN', jsonb_build_object('by',
+          (select display_name from public.family_members where id = pickup.assignee_member_id)));
+      end if;
       if not pickup.location_confirmed then return deriro_private.err('LOCATION_UNCONFIRMED'); end if;
       if vehicle.active_pickup_id is not null and vehicle.active_pickup_id <> pickup.id and not parked then
         return deriro_private.err('FORBIDDEN');

@@ -466,6 +466,11 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
           ...assign(member.id, actor.id), status: "en_route", enRouteAt: now, navigation, offer: nextOffer, customized: takenRoutine,
         }), "accepted", "en_route");
       }
+      // A car that pressed "출발하고 안내" on a request or routine card and lost the race hears who took it (V-03).
+      // From a handoff card (with an offer ID) an offer that is not valid for this driver is NO_VALID_OFFER (8.3.1).
+      const heldByOther = (pickup.status === "assigned" || pickup.status === "en_route" || pickup.status === "arrived") &&
+        pickup.assigneeId !== member.id;
+      if (heldByOther && action.offerId === undefined) return fail("ALREADY_TAKEN");
       if (pickup.status !== "assigned") return fail("INVALID_STATE");
       if (pickup.assigneeId === member.id) {
         return ok(update({ status: "en_route", enRouteAt: now, vehicleId: actor.id, navigation, offer: closeOffer(offer, "cancelled") }), "en_route");

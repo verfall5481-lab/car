@@ -82,8 +82,9 @@ select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,cod
 set local request.jwt.claim.sub = '00000000-0000-4000-8000-000000000016';
 select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,detail,by}', '엄마',
   'a car whose driver lost the race hears who took it (F-10)') from responses where name = 'initial';
-select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid, 2, pg_temp.fixture(73))#>>'{error,code}', 'NO_VALID_OFFER',
-  'starting another driver''s trip without an offer is NO_VALID_OFFER (8.3.1)') from responses where name = 'initial';
+select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid, 2, pg_temp.fixture(73))#>>'{error,code}'||':'||
+  (public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid, 2, pg_temp.fixture(73))#>>'{error,detail,by}'), 'ALREADY_TAKEN:엄마',
+  '"출발하고 안내" from a request card after losing the race is ALREADY_TAKEN too (V-03)') from responses where name = 'initial';
 set local request.jwt.claim.sub = '00000000-0000-4000-8000-000000000011';
 insert into responses
 select 'offer', public.offer_pickup((value#>>'{data,pickup,id}')::uuid, 2, pg_temp.fixture(22)) from responses where name = 'initial';

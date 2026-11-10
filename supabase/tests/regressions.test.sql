@@ -543,7 +543,9 @@ select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,cod
   (public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,detail,by}'),'ALREADY_TAKEN:엄마',
   '이모''s car hears that 엄마 already took the trip') from saved where name='dad_request';
 select is(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,(select v.value::int from saved v where v.name='version_race'),
-  pg_temp.fixture(1191))#>>'{error,code}','INVALID_STATE','starting another driver''s trip that is under way is INVALID_STATE (8.3.1)')
+  pg_temp.fixture(1191))#>>'{error,code}'||':'||(public.vehicle_start_now((value#>>'{data,pickup,id}')::uuid,
+  (select v.value::int from saved v where v.name='version_race'),pg_temp.fixture(1191))#>>'{error,detail,by}'),'ALREADY_TAKEN:엄마',
+  '"출발하고 안내" on a request card whose trip 엄마 is already driving is ALREADY_TAKEN (V-03)')
   from saved where name='dad_request';
 select is(public.mark_arrived((value#>>'{data,pickup,id}')::uuid,'manual',p_expected_version=>(select v.value::int from saved v where v.name='version_race'))
   #>>'{error,code}','NOT_FOUND','other actions on someone else''s trip stay NOT_FOUND (2.2)') from saved where name='dad_request';
@@ -554,6 +556,45 @@ select is(public.accept_pickup((value#>>'{data,pickup,id}')::uuid)#>>'{error,cod
   'a car driven by the requester still cannot see the request') from saved where name='dad_request';
 reset role;
 update public.vehicles set current_driver_member_id=pg_temp.fixture(1113) where id=pg_temp.fixture(1141);
+
+-- 8.3.1: "출발하고 안내" from a handoff card (with an offer ID) on someone else's trip needs an offer valid for this
+-- driver; otherwise NO_VALID_OFFER, and an offer that just expired is stored as expired first.
+insert into public.pickups(id,family_id,rider_id,source,status,assignee_member_id,location_source,location_confirmed,
+  dest_lat,dest_lng,dest_label,wanted_at,accepted_at,assignment_round)
+values(pg_temp.fixture(1153),pg_temp.fixture(1110),pg_temp.fixture(1121),'request','assigned',pg_temp.fixture(1111),'map_pin',true,
+  37.56,127.11,'학원 정문',now()+interval '30 minutes',now()-interval '1 minute',1);
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+insert into saved values ('offer_to_dad',public.offer_pickup(pg_temp.fixture(1153),
+  (select version from public.pickups where id=pg_temp.fixture(1153)),pg_temp.fixture(1112)));
+reset role;
+insert into saved values ('version_1153',to_jsonb((select version from public.pickups where id=pg_temp.fixture(1153))));
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1192),
+  (select (value#>>'{data,offer,id}')::uuid from saved where name='offer_to_dad'))#>>'{error,code}','NO_VALID_OFFER',
+  'an offer addressed to another driver does not let 이모''s car start the trip');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+insert into saved values ('offer_to_all',public.offer_pickup(pg_temp.fixture(1153),
+  (select value::int from saved where name='version_1153')));
+reset role;
+update public.pickup_offers set expires_at=now()-interval '1 second'
+  where id=(select (value#>>'{data,offer,id}')::uuid from saved where name='offer_to_all');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1193),
+  (select (value#>>'{data,offer,id}')::uuid from saved where name='offer_to_dad'))#>>'{error,code}','NO_VALID_OFFER',
+  'a superseded offer is not valid either');
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1194),
+  (select (value#>>'{data,offer,id}')::uuid from saved where name='offer_to_all'))#>>'{error,code}','NO_VALID_OFFER',
+  'nor an offer to everyone that has just expired');
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1195))
+  #>>'{error,detail,by}','엄마','without an offer ID the same car hears that 엄마 has the trip');
+reset role;
+select is((select string_agg((o.to_member_id is null)::text||':'||o.status,',' order by o.to_member_id is null) from public.pickup_offers o
+  where o.pickup_id=pg_temp.fixture(1153)),'false:superseded,true:expired','the just-expired offer is stored as expired');
+select is((select status||':'||deriro_private.member_name(assignee_member_id) from public.pickups where id=pg_temp.fixture(1153)),
+  'assigned:엄마','엄마 still holds the trip');
 
 select * from finish();
 rollback;

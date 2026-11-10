@@ -2124,7 +2124,7 @@ create trigger pickups_touch before update on public.pickups
 | `assigned`, 담당 = 이 차 운전자 | 공통 출발 처리 → 세션 발급 |
 | `assigned`, 다른 담당, `offer_id`가 운전자에게 유효(`pending`·미만료·대상 일치) | 인계 수락(`respond_offer`와 같은 검증·효과, `accepted_at` 갱신) → 공통 출발 처리 → 세션 발급 |
 | `assigned`, 다른 담당, `offer_id`를 보냈지만 운전자에게 유효하지 않음 | `{ok:false, NO_VALID_OFFER}`. 제안이 방금 만료됐으면 만료 처리까지 커밋 |
-| `assigned`·`en_route`·`arrived`, 다른 담당, `offer_id` 없음(요청·루틴 카드에서 늦게 누름) | `{ok:false, ALREADY_TAKEN}`, detail.by = 현재 담당자. `accept_pickup`의 경합 패배와 같다(V-03) |
+| `assigned`·`en_route`·`arrived`, 다른 담당, `offer_id` 없음(요청·루틴 카드에서 늦게 누름) | `{ok:false, ALREADY_TAKEN}`, detail.by = 현재 담당자. `accept_pickup`의 경합 패배와 같다(V-03). 이 판정은 버전 검사보다 먼저 한다. 수락으로 버전이 올랐으므로 늦은 차의 카드는 항상 이전 버전이기 때문이다(4.5) |
 | `en_route`, 이 차가 배정 차량 | 출발 상태 유지, 새 세션 발급(안내 다시 열기, 내비 재시도) |
 | 그 밖 | `INVALID_STATE` |
 

@@ -3,7 +3,7 @@ import { Bell, CalendarDays, CarFront, Check, CircleAlert, CircleHelp, Clock3, M
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { isActivePickup, isCoordinates } from '@deriro/contracts';
 import { clock, copy, dateLabel } from './copy.ts';
-import { applyDemoAction, changed, demoRoutinesToday, familyId, formatPairCode, freshDemo, minute, nameOf, normalizePairCode, pairCodeLength, pairVehicle, rangeEstimate, routineOccurrence, setDemoTime, setVehicleDriver, unpairVehicle, vehiclePaired } from './demo-domain.ts';
+import { changed, demoRoutinesToday, familyId, formatPairCode, freshDemo, minute, nameOf, normalizePairCode, pairCodeLength, pairVehicle, rangeEstimate, reviseRoutine, routineOccurrence, setDemoTime, setVehicleDriver, skipOccurrences, unpairVehicle, vehiclePaired } from './demo-domain.ts';
 import type { DemoState, Person, Routine } from './demo-domain.ts';
 import { Badge, Button, HeaderBell, MapPreview, MobileHeader, pinOrigin, Row, Sheet, useClock, useCommit, useToast, uid } from './ui.tsx';
 import { DemoFamilySetup, DemoGuardianInstall, DemoGuardianInvite, DemoGuardianLogin, InviteQr } from './guardian-onboarding.tsx';
@@ -11,21 +11,16 @@ import { demoStore } from './demo-store.ts';
 
 type Props = { state: DemoState; member: Person };
 
-function Routines({ state }: Props) {
+function Routines({ state, member }: Props) {
   const now = useClock(state);
   const commit = useCommit();
   const [disable, setDisable] = useState<Routine>();
   async function toggle(routine: Routine, enabled: boolean, cancel = false) {
     const result = await commit((current, stamp) => {
-      let next = current;
-      if (cancel) {
-        for (const pickup of current.pickups) {
-          if (current.occurrences[pickup.id] !== routine.id || !['open', 'assigned'].includes(pickup.status)) continue;
-          const update = applyDemoAction(next, pickup.id, { kind: 'member', id: current.members[0].id }, { type: 'cancel', expectedVersion: pickup.version, reason: 'skipped' }, stamp);
-          if (!update.ok) return { ...update, state: current };
-          next = update.state;
-        }
-      }
+      const skipped = cancel ? skipOccurrences(current, routine, member.id, stamp) : changed(current);
+      if (!skipped.ok) return skipped;
+      // Turning a routine back on recomputes its upcoming occurrences, as revise_routine does; pausing changes none.
+      const next = reviseRoutine(skipped.state, { ...routine, enabled }, stamp);
       return changed({ ...next, routines: next.routines.map((item) => item.id === routine.id ? { ...item, enabled } : item) });
     });
     if (result.ok) setDisable(undefined);
@@ -116,7 +111,7 @@ export function GuardianManagement(props: Props) {
   return <Navigate to="/p/" replace />;
 }
 
-function RoutineEditor({ state, id }: Props & { id: string }) {
+function RoutineEditor({ state, member, id }: Props & { id: string }) {
   const navigate = useNavigate();
   const commit = useCommit();
   const existing = state.routines.find((routine) => routine.id === id);
@@ -131,12 +126,10 @@ function RoutineEditor({ state, id }: Props & { id: string }) {
   async function save(enabled: boolean, cancelOccurrences = false, remove = false) {
     await commit((current, now) => {
       let result = current;
-      if (cancelOccurrences) {
-        for (const pickup of current.pickups) {
-          if (current.occurrences[pickup.id] !== routine.id || !['open', 'assigned'].includes(pickup.status)) continue;
-          result = applyDemoAction(result, pickup.id, { kind: 'member', id: current.members[0].id }, { type: 'cancel', expectedVersion: pickup.version, reason: 'skipped' }, now).state;
-        }
-      }
+      if (cancelOccurrences && !remove) result = skipOccurrences(result, routine, member.id, now).state;
+      // revise_routine: upcoming occurrences nobody changed follow the saved routine; deleting it (archive_routine)
+      // cancels those, while accepted or handed-off occurrences stay (F-07, S-16, S-28).
+      if (existing) result = reviseRoutine(result, { ...routine, enabled }, now, remove);
       return changed({ ...result, routines: remove ? result.routines.filter((item) => item.id !== routine.id) : existing ? result.routines.map((item) => item.id === routine.id ? { ...routine, enabled } : item) : [...result.routines, { ...routine, enabled }] });
     });
     navigate('/p/routines');

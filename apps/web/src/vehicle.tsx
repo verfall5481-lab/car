@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { isActivePickup, resolveDestination } from '@deriro/contracts';
 import type { Actor, Pickup, PickupAction } from '@deriro/contracts';
 import { clock, copy } from './copy.ts';
-import { changed, destinationLabel, formatPairCode, minute, nameOf, nearbyPlaces, renewPairCode, setVehicleDriver, unpairVehicle, vehiclePaired } from './demo-domain.ts';
+import { changed, declineFromCar, destinationLabel, formatPairCode, minute, nameOf, nearbyPlaces, renewPairCode, setVehicleDriver, unpairVehicle, vehiclePaired } from './demo-domain.ts';
 import type { ActionOptions, Change, DemoState, DemoVehicle, PairCode } from './demo-domain.ts';
 import { Button, MapPreview, Row, Status, uid, useClock, useCommit, usePickupAction, useToast } from './ui.tsx';
 import { vehicleView } from './vehicle-view.ts';
@@ -48,22 +48,11 @@ export function useDemoVehicleOperations(state: DemoState): VehicleOperations {
     live: false,
     pending: false,
     act: (pickup, action, message, options) => act(pickup, actor, action, message, options),
-    // F-12 "못 가요": an open request records this driver's refusal; an assigned pickup asks everyone while staying assigned.
+    // F-12 "못 가요", as vehicle_decline: an open request records this driver's refusal (the last driver to refuse closes
+    // the request offer); the driver's own trip is offered to everyone while staying assigned.
     async cannotGo(item) {
-      const offer = item.offer;
-      if (item.status === 'open') {
-        if (offer?.status === 'pending' && offer.fromMemberId == null && !offer.declinedBy.includes(driverId)) {
-          const decline: PickupAction = { type: 'respond_offer', expectedVersion: item.version, offerId: offer.id, response: 'decline' };
-          await act(item, actor, decline, copy.carDeclinedOthers);
-          return;
-        }
-        await commit((current, at) => changed({
-          ...current,
-          history: [{ pickupId: item.id, at, event: 'request_declined', actor: driverId }, ...current.history],
-        }), copy.carDeclinedOthers);
-        return;
-      }
-      await act(item, actor, { type: 'offer', expectedVersion: item.version, offerId: uid() }, copy.carDeclinedOthers);
+      const offerId = uid();
+      await commit((current, at) => declineFromCar(current, item.id, actor, item.version, at, offerId), copy.carDeclinedOthers);
     },
     updateVehicle(fields) {
       void commit((current) => changed({ ...current, vehicle: { ...current.vehicle, ...fields } }));

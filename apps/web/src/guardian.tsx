@@ -6,6 +6,7 @@ import type { Actor, Coordinates, Destination, Pickup, PickupAction } from '@der
 import { clock, copy, dateLabel } from './copy.ts';
 import { demoRoutinesToday, destinationLabel, familyId, minute, nameOf, nearbyPlaces, rangeEstimate } from './demo-domain.ts';
 import type { DemoState, Person } from './demo-domain.ts';
+import { guardianOffer } from './guardian-view.ts';
 import { Badge, Button, eventText, HeaderBell, MapPreview, MobileHeader, Placeholder, RadioLine, Row, Sheet, Status, StepCheck, uid, useClock, useCommit, usePickupAction, usePickupOperations, useToast } from './ui.tsx';
 import './guardian.css';
 
@@ -25,10 +26,8 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
   const assignee = pickup.assigneeId === member.id;
   const fromSelf = pickup.requester.kind === 'member' && pickup.requester.id === member.id;
   const eligible = requestRecipients(pickup, state.members).memberIds.includes(member.id);
-  const offer = pickup.offer;
-  const pending = offer?.status === 'pending';
-  const sent = pending && offer.fromMemberId === member.id;
-  const received = pending && eligible && offer.fromMemberId !== member.id && (!offer.toMemberId || offer.toMemberId === member.id) && !offer.declinedBy.includes(member.id);
+  // A family-wide offer (no sender) keeps "내가 갈게"; only a handoff to me is answered with "수락" (P-04).
+  const { sent, received, canAccept } = guardianOffer(pickup, member.id, eligible);
   const version = pickup.version;
   const change = (action: PickupAction) => act(pickup, actor, action);
   const openPage = (page: 'handoff' | 'location') => navigate(`${pickupPath(pickup)}/${page}`, { state: { returnToPickupHome: compact } });
@@ -38,14 +37,14 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
 
   if (showOfferResult && acknowledge && assignee && pickup.status === 'assigned') {
     buttons = <><Button onClick={acknowledge}>{copy.confirm}</Button><Button variant="secondary" onClick={() => openPage('handoff')}>{copy.handoffAgain}</Button></>;
-  } else if (pickup.status === 'open' && eligible && (!pending || received)) {
+  } else if (canAccept) {
     buttons = <><Button disabled={busy} onClick={() => setOpen('car')}>{received ? copy.acceptOffer : copy.accept}</Button>
-      {received && offer.fromMemberId ? <Button variant="secondary" onClick={() => { void change({ type: 'respond_offer', expectedVersion: version, offerId: offer.id, response: 'decline' }); }}>{copy.decline}</Button> :
+      {received ? <Button variant="secondary" onClick={() => { void change({ type: 'respond_offer', expectedVersion: version, offerId: received.id, response: 'decline' }); }}>{copy.decline}</Button> :
         <Button variant="secondary" onClick={() => setOpen('cancel')}>{copy.closeRequest}</Button>}</>;
   } else if (received && pickup.status === 'assigned') {
-    buttons = <><Button onClick={() => setOpen('car')}>{copy.acceptOffer}</Button><Button variant="secondary" onClick={() => { void change({ type: 'respond_offer', expectedVersion: version, offerId: offer.id, response: 'decline' }); }}>{copy.decline}</Button></>;
+    buttons = <><Button onClick={() => setOpen('car')}>{copy.acceptOffer}</Button><Button variant="secondary" onClick={() => { void change({ type: 'respond_offer', expectedVersion: version, offerId: received.id, response: 'decline' }); }}>{copy.decline}</Button></>;
   } else if (sent) {
-    buttons = <><Button variant={compact ? 'plain' : 'primary'} disabled={busy} onClick={depart}>{pickup.destination.confirmed ? copy.departure : copy.carCheckMap}</Button><Button variant={compact ? 'primary' : 'secondary'} disabled={busy} onClick={() => { void change({ type: 'cancel_offer', expectedVersion: version, offerId: offer.id }); }}>{copy.handoffCancel}</Button></>;
+    buttons = <><Button variant={compact ? 'plain' : 'primary'} disabled={busy} onClick={depart}>{pickup.destination.confirmed ? copy.departure : copy.carCheckMap}</Button><Button variant={compact ? 'primary' : 'secondary'} disabled={busy} onClick={() => { void change({ type: 'cancel_offer', expectedVersion: version, offerId: sent.id }); }}>{copy.handoffCancel}</Button></>;
   } else if (assignee && pickup.status === 'assigned') {
     buttons = <><Button disabled={busy} onClick={depart}>{pickup.destination.confirmed ? copy.departure : copy.carCheckMap}</Button>{handoff}</>;
   } else if (assignee && pickup.status === 'en_route') {
@@ -69,7 +68,7 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
     {buttons && <div className={`guardian-actions ${compact && pickup.status !== 'arrived' ? 'guardian-actions--inline' : ''}`}>{buttons}</div>}
     {!compact && assignee && pickup.status === 'assigned' && <div className="guardian-actions guardian-actions--foot"><Button variant="plain" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button>{pickup.source === 'routine' && <Button variant="plain" onClick={() => setOpen('skip')}>{copy.skipRoutine}</Button>}</div>}
     {(open === 'car' || open === 'takeover') && <AcceptSheet state={state} member={member} close={close} takeover={open === 'takeover' ? nameOf(state, pickup.assigneeId) : undefined} accept={async (vehicleId) => {
-      const result = await change(open === 'takeover' ? { type: 'take_over', expectedVersion: version, vehicleId } : received ? { type: 'respond_offer', expectedVersion: version, offerId: offer.id, response: 'accept', vehicleId } : { type: 'accept', vehicleId });
+      const result = await change(open === 'takeover' ? { type: 'take_over', expectedVersion: version, vehicleId } : received ? { type: 'respond_offer', expectedVersion: version, offerId: received.id, response: 'accept', vehicleId } : { type: 'accept', vehicleId });
       if (result.ok) close();
     }} />}
     {open === 'cancel' && <CancelSheet close={close} arrived={pickup.status === 'arrived'} label={pickup.status === 'open' ? copy.closeRequest : pickup.status === 'arrived' ? copy.notMet : copy.cancelPickup} confirm={async (reasonIndex) => {
@@ -226,7 +225,9 @@ export function GuardianHome({ state, member }: { state: DemoState; member: Pers
   const now = useClock(state);
   const [dismissedOffers, setDismissedOffers] = useState<string[]>([]);
   const visible = state.pickups.filter((pickup) => pickup.status !== 'open' || requestRecipients(pickup, state.members).memberIds.includes(member.id) || pickup.requester.id === member.id);
-  const cards = visible.filter((pickup) => isActivePickup(pickup) && (pickup.source === 'request' || pickup.readyAt != null || pickup.offer && !dismissedOffers.includes(pickup.offer.id) || pickup.status === 'en_route' || pickup.status === 'arrived' || pickup.status === 'assigned' && pickup.assigneeId === member.id && now >= pickup.wantedAt - 5 * minute));
+  // A family-wide offer counts only while pending; once taken or lapsed it is no news, as in the live feed (visible_offer).
+  const offerCard = (pickup: Pickup) => pickup.offer != null && (pickup.offer.status === 'pending' || pickup.offer.fromMemberId != null) && !dismissedOffers.includes(pickup.offer.id);
+  const cards = visible.filter((pickup) => isActivePickup(pickup) && (pickup.source === 'request' || pickup.readyAt != null || offerCard(pickup) || pickup.status === 'en_route' || pickup.status === 'arrived' || pickup.status === 'assigned' && pickup.assigneeId === member.id && now >= pickup.wantedAt - 5 * minute));
   const displayed = visible.filter((pickup) => !cards.includes(pickup));
   const routines = state.live ? [] : demoRoutinesToday(state, now);
   const today = displayed.filter((pickup) => dateLabel(pickup.wantedAt) === dateLabel(now)).sort((a, b) => a.wantedAt - b.wantedAt);

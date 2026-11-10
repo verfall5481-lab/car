@@ -287,6 +287,19 @@ export function reviseRoutine(state: DemoState, routine: Routine, now: number, a
   return next;
 }
 
+/** `upsert_routine(active=false, cancel_future=true)`: this guardian skips every upcoming open or assigned occurrence. */
+export function skipOccurrences(state: DemoState, routine: Routine, memberId: string, now: number): Change {
+  let next = state;
+  for (const pickup of state.pickups) {
+    if (state.occurrences[pickup.id] !== routine.id || pickup.wantedAt < now || !['open', 'assigned'].includes(pickup.status)) continue;
+    const cancel: PickupAction = { type: 'cancel', expectedVersion: pickup.version, reason: 'skipped' };
+    const update = applyDemoAction(next, pickup.id, { kind: 'member', id: memberId }, cancel, now);
+    if (!update.ok) return { ...update, state };
+    next = update.state;
+  }
+  return changed(next);
+}
+
 /** The demo clock: today's occurrences at their notify time, then one scheduler pass over every pickup (9장). */
 export function setDemoTime(state: DemoState, now: number): DemoState {
   let next = state;

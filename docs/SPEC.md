@@ -183,7 +183,7 @@ v0.3 검토(기능 설명·예제 SQL·RPC·화면·테스트 대조)에서 나�
 | 만료 시 제안 | 4.3은 `expired`, 4.4는 `cancelled`로 달랐다 | 픽업 만료는 `expired`, 취소·완료는 `cancelled` | 4.4 |
 | 루틴 재계산 | 개별 변경 없는 회차의 담당 변경에 이벤트·제안 처리가 없었다 | 대기 제안 `cancelled`, 이벤트 `routine_reassigned`, 알림 없음 | 4.1, 4.4 |
 | 이벤트 없는 취소 | 구성원 보관, 루틴 중지·보관·수정으로 닫히는 픽업의 주체·알림이 없었다 | 보호자 또는 시스템 취소로 이벤트를 남기고 16.1대로 알린다 | 8.3, 16.1, 16.2 |
-| 차량의 경합 패배 | 다른 사람이 먼저 맡은 픽업을 차에서 누르면 V-03은 `ALREADY_TAKEN`, 8.3.1은 `NO_VALID_OFFER`였다 | 요청·루틴 카드(`offer_id` 없음)는 `ALREADY_TAKEN`, 부탁 카드(`offer_id` 있음)는 `NO_VALID_OFFER` | 8.3.1 |
+| 차량의 경합 패배 | 다른 사람이 먼저 맡은 픽업을 차에서 누르면 V-03은 `ALREADY_TAKEN`, 8.3.1은 `NO_VALID_OFFER`였다 | 요청·루틴 카드는 `ALREADY_TAKEN`, 부탁 카드(보낸 사람이 있는 제안)는 `NO_VALID_OFFER` | 8.3.1 |
 | 연결 모드 차량 시뮬레이터 | 차량 기기 없이는 실제 백엔드의 차량 경로를 확인할 수 없었다 | 플래그로 켜는 웹 차량 시뮬레이터 | 23.8 |
 
 ---
@@ -2123,8 +2123,8 @@ create trigger pickups_touch before update on public.pickups
 | `open`, 만료 시각 지남 | 만료 처리 커밋 후 `{ok:false, PICKUP_EXPIRED}` |
 | `assigned`, 담당 = 이 차 운전자 | 공통 출발 처리 → 세션 발급 |
 | `assigned`, 다른 담당, `offer_id`가 운전자에게 유효(`pending`·미만료·대상 일치) | 인계 수락(`respond_offer`와 같은 검증·효과, `accepted_at` 갱신) → 공통 출발 처리 → 세션 발급 |
-| `assigned`, 다른 담당, `offer_id`를 보냈지만 운전자에게 유효하지 않음 | `{ok:false, NO_VALID_OFFER}`. 제안이 방금 만료됐으면 만료 처리까지 커밋 |
-| `assigned`·`en_route`·`arrived`, 다른 담당, `offer_id` 없음(요청·루틴 카드에서 늦게 누름) | `{ok:false, ALREADY_TAKEN}`, detail.by = 현재 담당자. `accept_pickup`의 경합 패배와 같다(V-03). 이 판정은 버전 검사보다 먼저 한다. 수락으로 버전이 올랐으므로 늦은 차의 카드는 항상 이전 버전이기 때문이다(4.5) |
+| `assigned`, 다른 담당, 보낸 사람이 있는 부탁의 `offer_id`를 보냈지만 운전자에게 유효하지 않음 | `{ok:false, NO_VALID_OFFER}`. 제안이 방금 만료됐으면 만료 처리까지 커밋 |
+| `assigned`·`en_route`·`arrived`, 다른 담당, 이 차가 배정 차량이 아님, `offer_id`가 없거나 보낸 사람 없는 가족 전체 제안(요청·루틴)의 것(요청·루틴 카드에서 늦게 누름) | `{ok:false, ALREADY_TAKEN}`, detail.by = 현재 담당자. `accept_pickup`의 경합 패배와 같다(V-03). 이 판정은 버전 검사보다 먼저 한다. 수락으로 버전이 올랐으므로 늦은 차의 카드는 항상 이전 버전이기 때문이다(4.5) |
 | `en_route`, 이 차가 배정 차량 | 출발 상태 유지, 새 세션 발급(안내 다시 열기, 내비 재시도) |
 | 그 밖 | `INVALID_STATE` |
 

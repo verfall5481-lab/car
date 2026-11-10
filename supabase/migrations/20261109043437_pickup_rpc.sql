@@ -385,12 +385,15 @@ begin
     return deriro_private.err('STALE_VERSION', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup)));
   end if;
 
-  -- "출발하고 안내" pressed on a request or routine card (no offer) of a trip someone else now holds, from a car that is
-  -- not the trip's car: the car lost the race. Its card was drawn before the winner's acceptance changed the version,
-  -- and the only outcome is the ALREADY_TAKEN rejection below, which writes nothing. So, like accept_pickup, the race
-  -- result comes before the version check (4.5, V-03, S-02). Every other start keeps the check (8.3.1).
-  lost_race := p_action = 'vehicle_start' and actor.kind = 'vehicle' and offer_id is null and not is_assignee
-    and pickup.status in ('assigned', 'en_route', 'arrived') and pickup.assignee_member_id is distinct from actor.member_id;
+  -- "출발하고 안내" pressed on a request or routine card of a trip someone else now holds, from a car that is not the
+  -- trip's car: the car lost the race. A request card carries no offer ID or the pickup's own family-wide offer (no
+  -- sender); only a handoff offer (with a sender) takes the 8.3.1 handoff path. The card was drawn before the winner's
+  -- acceptance changed the version, and the only outcome is the ALREADY_TAKEN rejection below, which writes nothing.
+  -- So, like accept_pickup, the race result comes before the version check (4.5, V-03, S-02).
+  lost_race := p_action = 'vehicle_start' and actor.kind = 'vehicle' and not is_assignee
+    and pickup.status in ('assigned', 'en_route', 'arrived') and pickup.assignee_member_id is distinct from actor.member_id
+    and (offer_id is null or exists(select 1 from public.pickup_offers o
+      where o.id = offer_id and o.pickup_id = pickup.id and o.from_member_id is null));
   if p_action <> 'accept' and not lost_race and not (p_action = 'arrive' and arrival_source is not distinct from 'nav_callback')
     and p_action <> 'nav_result' and pickup.version is distinct from p_expected_version
   then return deriro_private.err('STALE_VERSION', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup))); end if;
@@ -534,8 +537,8 @@ begin
         pickup := deriro_private.expire_pickup(pickup);
         return deriro_private.err('PICKUP_EXPIRED', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup)));
       end if;
-      -- The car lost the race (see lost_race) and hears who won, as accept_pickup does (V-03, S-02). With an offer ID
-      -- the handoff rules below apply, and the trip's own car keeps its branch (8.3.1).
+      -- The car lost the race (see lost_race) and hears who won, as accept_pickup does (V-03, S-02). With a handoff
+      -- offer ID the rules below apply, and the trip's own car keeps its branch (8.3.1).
       if lost_race then
         return deriro_private.err('ALREADY_TAKEN', jsonb_build_object('by',
           (select display_name from public.family_members where id = pickup.assignee_member_id)));

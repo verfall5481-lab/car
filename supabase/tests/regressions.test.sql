@@ -638,5 +638,75 @@ select is((select deriro_private.member_name(p.assignee_member_id)||':'||(p.nav_
   join saved s on s.name='dad_request' and p.id=(s.value#>>'{data,pickup,id}')::uuid),'엄마:true',
   're-opening guidance keeps 엄마 as the assignee');
 
+-- The lost-race rule does not depend on the client. Request and routine cards carry the pickup's family-wide offer ID
+-- (vehicle_get_feed offer_id), and the car apps send it with "출발하고 안내". Pressed after someone else took the trip,
+-- that is still a lost race: ALREADY_TAKEN with the old card version, and nothing is written.
+insert into public.pickup_offers(id,family_id,pickup_id,origin,expires_at)
+  values(pg_temp.fixture(1183),pg_temp.fixture(1010),pg_temp.fixture(1059),'request',now()+interval '65 minutes');
+insert into saved values ('version_1059',to_jsonb((select version from public.pickups where id=pg_temp.fixture(1059)))),
+  ('version_1152',to_jsonb((select version from public.pickups where id=pg_temp.fixture(1152))));
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001001';
+select is(public.accept_pickup(pg_temp.fixture(1059))#>>'{data,pickup,assignee_member_id}',pg_temp.fixture(1011)::text,
+  '엄마 takes 서연''s request');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select is(public.vehicle_start_now(pg_temp.fixture(1059),(select value::int from saved where name='version_1059'),pg_temp.fixture(1201),
+  pg_temp.fixture(1183))#>>'{error,code}'||':'||(public.vehicle_start_now(pg_temp.fixture(1059),
+  (select value::int from saved where name='version_1059'),pg_temp.fixture(1201),pg_temp.fixture(1183))#>>'{error,detail,by}'),
+  'ALREADY_TAKEN:엄마','아빠''s car pressing the request card with its offer ID still hears that 엄마 won');
+reset role;
+select is((select p.status||':'||p.version||':'||coalesce(p.nav_session_id::text,'-')||':'||o.status||':'||o.resolved_by_member_id
+  from public.pickups p join public.pickup_offers o on o.pickup_id=p.id where p.id=pg_temp.fixture(1059)),
+  'assigned:'||((select value::int from saved where name='version_1059')+1)||':-:accepted:'||pg_temp.fixture(1011),
+  'the lost race leaves the pickup and 엄마''s accepted request offer as they were');
+-- The same for an announced open routine occurrence (its routine offer is on the card) that 아빠 took.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001102';
+select is(public.accept_pickup(pg_temp.fixture(1152))#>>'{data,pickup,assignee_member_id}',pg_temp.fixture(1112)::text,
+  '아빠 takes the announced routine occurrence');
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now(pg_temp.fixture(1152),(select value::int from saved where name='version_1152'),pg_temp.fixture(1202),
+  pg_temp.fixture(1182))#>>'{error,code}'||':'||(public.vehicle_start_now(pg_temp.fixture(1152),
+  (select value::int from saved where name='version_1152'),pg_temp.fixture(1202),pg_temp.fixture(1182))#>>'{error,detail,by}'),
+  'ALREADY_TAKEN:아빠','이모''s car pressing the routine card with its offer ID hears that 아빠 won');
+reset role;
+select is((select o.status||':'||o.resolved_by_member_id from public.pickup_offers o where o.id=pg_temp.fixture(1182)),
+  'accepted:'||pg_temp.fixture(1112),'아빠''s acceptance of the routine offer is untouched');
+-- A real handoff offer (with a sender) keeps the 8.3.1 path: not valid for this driver means NO_VALID_OFFER.
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001101';
+insert into saved values ('handoff_1153',public.offer_pickup(pg_temp.fixture(1153),
+  (select value::int from saved where name='version_1153'),pg_temp.fixture(1112),'부탁해'));
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1203),
+  (select (value#>>'{data,offer,id}')::uuid from saved where name='handoff_1153'))#>>'{error,code}','NO_VALID_OFFER',
+  'a handoff offer addressed to 아빠 is still NO_VALID_OFFER for 이모''s car');
+select is(public.vehicle_start_now(pg_temp.fixture(1153),(select value::int from saved where name='version_1153'),pg_temp.fixture(1203),
+  pg_temp.fixture(1183))#>>'{error,code}','NO_VALID_OFFER','an offer ID from another pickup is NO_VALID_OFFER too');
+reset role;
+-- The trip's own car re-opens guidance with the family offer ID too, and an open start with it accepts and departs.
+insert into saved select 'version_own_car2',to_jsonb(p.version) from saved s join public.pickups p
+  on p.id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+insert into saved select 'dad_offer',to_jsonb(o.id) from saved s join public.pickup_offers o
+  on o.pickup_id=(s.value#>>'{data,pickup,id}')::uuid where s.name='dad_request';
+insert into public.pickups(id,family_id,rider_id,source,status,place_id,location_source,location_confirmed,
+  dest_lat,dest_lng,dest_label,wanted_at)
+values(pg_temp.fixture(1060),pg_temp.fixture(1010),pg_temp.fixture(1023),'request','open',pg_temp.fixture(1031),'saved_place',true,
+  37.55,127.1,'수학학원',now()+interval '5 minutes');
+insert into public.pickup_offers(id,family_id,pickup_id,origin,expires_at)
+  values(pg_temp.fixture(1184),pg_temp.fixture(1010),pg_temp.fixture(1060),'request',now()+interval '65 minutes');
+set local role authenticated;
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001104';
+select ok(public.vehicle_start_now((s.value#>>'{data,pickup,id}')::uuid,(select v.value::int from saved v where v.name='version_own_car2'),
+  pg_temp.fixture(1204),(select (v.value#>>'{}')::uuid from saved v where v.name='dad_offer'))#>>'{data,nav_session_id}' is not null,
+  'the trip''s own car gets a new session with the family offer ID') from saved s where s.name='dad_request';
+set local request.jwt.claim.sub='40000000-0000-4000-8000-000000001004';
+select is(public.vehicle_start_now(pg_temp.fixture(1060),1,pg_temp.fixture(1205),pg_temp.fixture(1184))#>>'{data,pickup,status}',
+  'en_route','an open request started with its offer ID accepts and departs as before');
+reset role;
+select is((select deriro_private.member_name(p.assignee_member_id)||':'||o.status||':'||o.resolved_by_member_id
+  from public.pickups p join public.pickup_offers o on o.pickup_id=p.id where p.id=pg_temp.fixture(1060)),
+  '아빠:accepted:'||pg_temp.fixture(1012),'the open start accepted the request offer for 아빠');
+
 select * from finish();
 rollback;

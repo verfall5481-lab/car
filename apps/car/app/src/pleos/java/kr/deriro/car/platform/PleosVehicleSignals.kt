@@ -3,7 +3,6 @@ package kr.deriro.car.platform
 import ai.pleos.playground.vehicle.Vehicle
 import ai.pleos.playground.vehicle.api.model.capability.AccessType
 import ai.pleos.playground.vehicle.api.model.capability.CapabilityConfig
-import android.annotation.SuppressLint
 import android.car.Car
 import android.car.VehicleGear
 import android.car.VehicleIgnitionState
@@ -15,18 +14,15 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.SystemClock
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
-import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,19 +38,19 @@ import kr.deriro.car.data.vehicle.Ignition
 import kr.deriro.car.data.vehicle.LatLng
 import kr.deriro.car.data.vehicle.VehicleCapability
 import kr.deriro.car.data.vehicle.VehicleSnapshot
-import kr.deriro.car.data.vehicle.VehicleStateSource
+import kr.deriro.car.live.VehicleSignals
 import kr.deriro.car.ux.DrivingMode
-import kr.deriro.car.ux.DrivingStateMonitor
 
 @Suppress("DEPRECATION")
-internal class PleosVehicleSignals(private val context: Context, scope: CoroutineScope) :
-    VehicleStateSource, DrivingStateMonitor, AutoCloseable {
+internal class PleosVehicleSignals(private val context: Context, private val scope: CoroutineScope) : VehicleSignals {
     private val values = MutableStateFlow(emptySnapshot())
     private val driving = MutableStateFlow(DrivingMode.UNKNOWN)
     private val permissionSetup = MutableStateFlow(false)
     override val snapshots = values.asStateFlow()
     override val mode = driving.asStateFlow()
-    val setupAllowed = permissionSetup.asStateFlow()
+    override val setupAllowed = permissionSetup.asStateFlow()
+    private val locations = LocationTracker(context)
+    private var locationRefresh: Job? = null
 
     private var car: Car? = null
     @Volatile private var properties: CarPropertyManager? = null
@@ -112,6 +108,11 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
 
     private val carPolling = scope.launch {
         while (isActive) {
+            locations.ensureListening()
+            if (locations.allowed && locations.current() == null && locationRefresh?.isActive != true) {
+                // No recent fix: ask for one in the background; the next snapshot picks it up.
+                locationRefresh = scope.launch { locations.fresh(LOCATION_FIX_TIMEOUT_MS) }
+            }
             val manager = properties
             val sequence = safetySequence
             val reading = readCurrent(manager)
@@ -152,6 +153,12 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
     }
     override fun capabilities(): Set<VehicleCapability> = values.value.observedAt.keys
 
+    override suspend fun freshLocation(timeoutMs: Long): LatLng? = locations.fresh(timeoutMs)
+
+    override fun permissionsChanged() {
+        locations.ensureListening()
+    }
+
     private fun attach(connected: Car?) {
         safetySequence++
         runCatching { properties?.unregisterCallback(safetyCallback) }
@@ -180,13 +187,8 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
     }
 
     private fun updateMode() {
-        driving.value = when {
-            platformRestricted == true || (recentSpeed?.let { abs(it) >= 1 } == true) -> DrivingMode.DRIVING
-            recentGear == Gear.PARK && recentSpeed != null -> DrivingMode.PARKED
-            recentGear != Gear.UNKNOWN && recentGear != Gear.PARK -> DrivingMode.DRIVING
-            else -> DrivingMode.UNKNOWN
-        }
-        permissionSetup.value = platformRestricted == false && driving.value != DrivingMode.DRIVING
+        driving.value = DrivingRules.mode(platformRestricted, recentGear, recentSpeed)
+        permissionSetup.value = DrivingRules.permissionSetupAllowed(platformRestricted, driving.value)
     }
 
     private fun readSnapshot(manager: CarPropertyManager?, cached: EnergyReading?): VehicleSnapshot {
@@ -201,7 +203,7 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
         }
         val gear = gear(manager.value<Int>(VehiclePropertyIds.GEAR_SELECTION))
         val speed = speed(manager.value<Float>(VehiclePropertyIds.PERF_VEHICLE_SPEED))
-        val location = lastLocation()
+        val location = locations.current()
         val now = Instant.now()
         val energyType = when {
             fuel != null && soc != null -> EnergyType.HYBRID
@@ -216,25 +218,12 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
             if (ignition != Ignition.UNKNOWN) put(VehicleCapability.IGNITION, now)
             if (gear != Gear.UNKNOWN) put(VehicleCapability.GEAR, now)
             if (speed != null) put(VehicleCapability.SPEED, now)
-            if (location != null) put(VehicleCapability.LOCATION, Instant.ofEpochMilli(location.time))
+            if (location != null) put(VehicleCapability.LOCATION, Instant.ofEpochMilli(location.timeMs))
         }
         val collected = observed[VehicleCapability.RANGE] ?: observed[VehicleCapability.GEAR]
             ?: listOfNotNull(observed[VehicleCapability.FUEL], observed[VehicleCapability.SOC]).minOrNull() ?: now
         return VehicleSnapshot(range, fuel, soc, energyType, ignition, gear, speed,
-            location?.let { LatLng(it.latitude, it.longitude) }, collected, false, observed)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun lastLocation(): Location? {
-        if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return null
-        val manager = context.getSystemService(LocationManager::class.java) ?: return null
-        return listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).mapNotNull { provider ->
-            runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-        }.filter {
-            it.hasAccuracy() && it.accuracy <= 100 &&
-                SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos in 0L..120_000_000_000L &&
-                LatLng(it.latitude, it.longitude).isValid
-        }.maxByOrNull(Location::getElapsedRealtimeNanos)
+            location?.position, collected, false, observed)
     }
 
     private inline fun <reified T : Any> CarPropertyManager?.value(id: Int): T? = runCatching {
@@ -263,6 +252,8 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
     override fun close() {
         carPolling.cancel()
         sdkPolling.cancel()
+        locationRefresh?.cancel()
+        locations.close()
         attach(null)
         runCatching { car?.disconnect() }
         runCatching { sdk?.release() }
@@ -271,6 +262,8 @@ internal class PleosVehicleSignals(private val context: Context, scope: Coroutin
     private data class EnergyReading(val fuel: Double?, val soc: Double?, val at: Instant)
 
     companion object {
+        private const val LOCATION_FIX_TIMEOUT_MS = 10_000L
+
         private fun emptySnapshot() = VehicleSnapshot(null, null, null, EnergyType.UNKNOWN, Ignition.UNKNOWN,
             Gear.UNKNOWN, null, null, Instant.EPOCH, false)
 

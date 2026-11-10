@@ -31,6 +31,14 @@ test('guardian projection accepts actual SQL and keeps pending sender and assign
   assert.equal(rangeEstimate(state, [pickup], { ...state.vehicle, range: null }).verdict, 'check');
 });
 
+test('guardian projection keeps rider phone numbers so a guardian can call after "not met"', () => {
+  const [first, ...rest] = overview.riders;
+  const withPhone = { ...overview, riders: [{ ...first, phone_e164: '+821012345678' }, ...rest] };
+  const state = guardianState(withPhone, today, detail, 100_000);
+  assert.equal(state.riders.find((rider) => rider.id === first.id)?.phone, '+821012345678');
+  assert.equal(state.riders.find((rider) => rider.id !== first.id)?.phone, undefined);
+});
+
 test('rider projection accepts privacy-filtered SQL without assuming a known range or sharing phone data', () => {
   const state = riderState(linked, 100_000);
   const pickup = state.pickups[0];

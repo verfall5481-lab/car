@@ -3,10 +3,11 @@ import { Bell, CalendarDays, CarFront, Check, CircleAlert, CircleHelp, Clock3, M
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { isActivePickup, isCoordinates } from '@deriro/contracts';
 import { clock, copy, dateLabel } from './copy.ts';
-import { applyDemoAction, changed, demoRoutinesToday, familyId, freshDemo, minute, nameOf, rangeEstimate, routineOccurrence, setDemoTime } from './demo-domain.ts';
+import { applyDemoAction, changed, demoRoutinesToday, familyId, formatPairCode, freshDemo, minute, nameOf, normalizePairCode, pairCodeLength, pairVehicle, rangeEstimate, routineOccurrence, setDemoTime, setVehicleDriver, unpairVehicle, vehiclePaired } from './demo-domain.ts';
 import type { DemoState, Person, Routine } from './demo-domain.ts';
 import { Badge, Button, HeaderBell, MapPreview, MobileHeader, pinOrigin, Row, Sheet, useClock, useCommit, useToast, uid } from './ui.tsx';
 import { DemoFamilySetup, DemoGuardianInstall, DemoGuardianInvite, DemoGuardianLogin, InviteQr } from './guardian-onboarding.tsx';
+import { demoStore } from './demo-store.ts';
 
 type Props = { state: DemoState; member: Person };
 
@@ -52,7 +53,7 @@ function Family({ state, member }: Props) {
   return <><MobileHeader title={copy.family}><Link className="button button--plain" to="/p/settings">{copy.settings}</Link></MobileHeader><div className="mobile-content family-page guardian-family-list">
     <section><h2>{copy.familyMembers}</h2>{state.members.map((person) => <Row key={person.id} icon={<UserRound size={19} />} title={person.id === member.id ? `${person.name} (${copy.me})` : person.name} to={`/p/members/${person.id}`} />)}<Row icon={<Plus size={19} />} title={copy.guardianInvite} to="/p/family/invite" /></section>
     <section><h2>{copy.person}</h2>{state.riders.filter((rider) => !rider.archivedAt).map((rider) => <Row key={rider.id} icon={<UserRound size={19} />} title={rider.name} trailing={rider.connected ? copy.connectedPhone : copy.unconnectedPhone} to={`/p/riders/${rider.id}`} />)}<Row icon={<Plus size={19} />} title={copy.addRider} to="/p/riders/new" /></section>
-    <section><h2>{copy.cars}</h2><Row icon={<CarFront size={19} />} title={state.vehicle.name} caption={copy.range(state.vehicle.range)} trailing={`${copy.driver} ${nameOf(state, state.vehicle.currentDriverId)}`} to={`/p/vehicles/${state.vehicle.id}`} /><Row icon={<Plus size={19} />} title={copy.carConnect} to="/p/vehicles/pair" /></section>
+    <section><h2>{copy.cars}</h2>{vehiclePaired(state.vehicle) && <Row icon={<CarFront size={19} />} title={state.vehicle.name} caption={copy.range(state.vehicle.range)} trailing={`${copy.driver} ${nameOf(state, state.vehicle.currentDriverId)}`} to={`/p/vehicles/${state.vehicle.id}`} />}<Row icon={<Plus size={19} />} title={copy.carConnect} to="/p/vehicles/pair" /></section>
     <section><h2>{copy.places}</h2>{state.places.filter((place) => place.archivedAt == null).map((place) => <Row key={place.id} icon={<MapPin size={19} />} title={place.label} to={`/p/places/${place.id}`} />)}<Row icon={<Plus size={19} />} title={copy.placeAdd} to="/p/places/new" /></section>
   </div></>;
 }
@@ -110,7 +111,7 @@ export function GuardianManagement(props: Props) {
     if (section === 'members') return <MemberDetail key={id} {...props} id={id} />;
     if (section === 'riders' || section === 'children') return <RiderDetail key={id} {...props} id={id} />;
     if (section === 'places') return <PlaceEditor key={id} {...props} id={id} />;
-    return id === props.state.vehicle.id ? <VehicleDetail {...props} /> : <Navigate to="/p/family" replace />;
+    return id === props.state.vehicle.id && vehiclePaired(props.state.vehicle) ? <VehicleDetail {...props} /> : <Navigate to="/p/family" replace />;
   }
   return <Navigate to="/p/" replace />;
 }
@@ -298,7 +299,9 @@ function NewPoint({ place, close }: { place: DemoState['places'][number]; close:
 
 function VehicleDetail({ state }: Props) {
   const commit = useCommit();
+  const navigate = useNavigate();
   const [confirmed, setConfirmed] = useState(false);
+  const [unpair, setUnpair] = useState(false);
   const now = useClock(state);
   const assigned = state.pickups.filter((pickup) => pickup.vehicleId === state.vehicle.id && isActivePickup(pickup));
   const estimate = rangeEstimate(state, assigned, state.vehicle);
@@ -307,34 +310,51 @@ function VehicleDetail({ state }: Props) {
     <div className="guardian-section-heading"><h1>{state.vehicle.name}</h1><Badge tone="neutral">{copy.demoValue}</Badge></div>
     <section><h2>{copy.rangeTitle}</h2><p className="range-number">{currentRange == null ? copy.noRange : `${currentRange}km`}</p>
       {state.vehicle.rangeCollectedAt && <p className="small muted">{copy.collectionTime} {clock(state.vehicle.rangeCollectedAt)}</p>}</section>
-    <section><h2>{copy.currentDriver}</h2><div className="chips">{state.members.filter((person) => person.canDrive).map((person) => <button type="button" className="chip" key={person.id} aria-pressed={state.vehicle.currentDriverId === person.id} disabled={Boolean(state.vehicle.activePickupId)} onClick={() => { void commit((current) => current.vehicle.activePickupId ? { ok: false, state: current, code: 'VEHICLE_BUSY' } : changed({ ...current, vehicle: { ...current.vehicle, currentDriverId: person.id } })); }}>{person.name}</button>)}</div></section>
+    <section><h2>{copy.currentDriver}</h2><div className="chips">{state.members.filter((person) => person.canDrive).map((person) => <button type="button" className="chip" key={person.id} aria-pressed={state.vehicle.currentDriverId === person.id} disabled={Boolean(state.vehicle.activePickupId)} onClick={() => { void commit((current) => setVehicleDriver(current, person.id)); }}>{person.name}</button>)}</div></section>
     <section><h2>{copy.todaySchedule}</h2>
       {assigned.filter((pickup) => dateLabel(pickup.wantedAt) === dateLabel(now)).map((pickup) => <Row key={pickup.id} icon={<time>{clock(pickup.wantedAt)}</time>} title={`${nameOf(state, pickup.requester.id)}, ${pickup.destination.label}`} to={`/p/pickups/${pickup.id}`} />)}
       {demoRoutinesToday(state, now).filter((routine) => routine.vehicleId === state.vehicle.id).map((routine) => <Row key={routine.id} icon={<time>{routine.time}</time>} title={`${nameOf(state, routine.requester.id)}, ${state.places.find((place) => place.id === routine.placeId)?.label ?? copy.location}`} to={`/p/routines/${routine.id}`} />)}
     </section>
     {!confirmed && estimate.verdict === 'low' && estimate.requiredKm != null && currentRange != null && <div className="guardian-range-warning stack"><h3><CircleAlert size={21} />{copy.rangeInsufficient}</h3><p>{copy.rangeNeed(estimate.requiredKm)}, {copy.rangeCurrent(currentRange)}</p><Button onClick={() => setConfirmed(true)}>{copy.confirm}</Button></div>}
     <a href="/v/" className="button button--outline">{copy.carDemoTitle}</a>
-  </div></>;
+    <Button variant="plain" className="danger-text" onClick={() => setUnpair(true)}>{copy.disconnect}</Button>
+  </div>{unpair && <Sheet title={copy.carDisconnectQuestion} close={() => setUnpair(false)}><p className="muted">{copy.carUnpairDesc}</p><div className="stack sheet-actions">
+    <Button variant="danger" onClick={async () => { const result = await commit((current, now) => unpairVehicle(current, now), copy.carUnpaired); if (result.ok) navigate('/p/family', { replace: true }); }}>{copy.disconnect}</Button>
+    <Button variant="secondary" onClick={() => setUnpair(false)}>{copy.back}</Button></div></Sheet>}</>;
 }
 
-function DemoVehiclePair({ state }: Props) {
+function DemoVehiclePair({ state, member }: Props) {
   const navigate = useNavigate();
-  const commit = useCommit();
+  const toast = useToast();
   const [params] = useSearchParams();
-  const code = (params.get('code') ?? copy.pairDemoCode).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
-  const [driver, setDriver] = useState(state.vehicle.currentDriverId ?? '');
+  const fromQr = normalizePairCode(params.get('code') ?? '');
+  const [code, setCode] = useState(fromQr);
+  const drivers = state.members.filter((person) => person.canDrive && person.leftAt == null);
+  const [driver, setDriver] = useState(drivers.some((person) => person.id === member.id) ? member.id : '');
   const [name, setName] = useState(state.vehicle.name);
+  const [error, setError] = useState('');
+  if (vehiclePaired(state.vehicle)) {
+    return <><MobileHeader back="/p/family" className="guardian-back-header" /><div className="mobile-content guardian-flow guardian-vehicle-pair">
+      <h1>{copy.carAlreadyPaired(state.vehicle.name)}</h1><p className="muted">{copy.carAlreadyPairedHint}</p>
+      <div className="stack guardian-flow-actions"><Link className="button button--primary" to={`/p/vehicles/${state.vehicle.id}`}>{state.vehicle.name}</Link><a href="/v/" className="button button--outline">{copy.openCarDemo}</a></div>
+    </div></>;
+  }
   return <><MobileHeader back="/p/family" className="guardian-back-header" /><div className="mobile-content guardian-flow guardian-vehicle-pair">
     <h1>{copy.vehiclesPairTitle}</h1><p className="muted">{copy.vehiclesPairDescription}</p>
     <form className="stack guardian-form-grow" onSubmit={async (event) => {
       event.preventDefault();
-      const result = await commit((current) => current.vehicle.activePickupId ? { ok: false, state: current, code: 'VEHICLE_BUSY' } : changed({ ...current, vehicle: { ...current.vehicle, name: name.trim(), currentDriverId: driver } }), copy.pairDemoDone);
-      if (result.ok) navigate(`/p/vehicles/${state.vehicle.id}`);
+      setError('');
+      // Errors stay next to the code field instead of also appearing as a toast.
+      const result = await demoStore.change((current, now) => pairVehicle(current, code, name, driver, now));
+      if (result.ok) { toast(copy.pairDemoDone); navigate(`/p/vehicles/${state.vehicle.id}`, { replace: true }); }
+      else setError(result.code === 'CODE_EXPIRED' ? copy.pairCodeExpired : result.code === 'CODE_INVALID' ? copy.pairWrongCode : copy.genericError);
     }}>
-      <output className="guardian-vehicle-code">{code.slice(0, 3)}-{code.slice(3)}</output>
+      {fromQr.length === pairCodeLength ? <output className="guardian-vehicle-code">{formatPairCode(fromQr)}</output> :
+        <label className="field">{copy.pairCodeLabel}<input className="guardian-vehicle-code-input" autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={7} required value={formatPairCode(code)} aria-invalid={Boolean(error)} onChange={(event) => { setCode(normalizePairCode(event.target.value)); setError(''); }} placeholder={copy.pairDemoCode} /></label>}
+      {error && <p role="alert" className="danger-text">{error}</p>}
       <label className="field">{copy.carNickname}<input maxLength={20} value={name} required onChange={(event) => setName(event.target.value)} /></label>
-      <fieldset><legend>{copy.currentDriver}</legend><div className="chips">{state.members.filter((person) => person.canDrive).map((person) => <button type="button" className="chip" key={person.id} aria-pressed={driver === person.id} onClick={() => setDriver(person.id)}>{person.name}</button>)}</div></fieldset>
-      <div className="stack guardian-flow-actions"><Button type="submit" disabled={code.length !== 6 || !driver || !name.trim()}>{copy.connect}</Button><p className="small muted guardian-demo-note">{copy.carPairDemoHint}</p></div>
+      <fieldset><legend>{copy.currentDriver}</legend><div className="chips">{drivers.map((person) => <button type="button" className="chip" key={person.id} aria-pressed={driver === person.id} onClick={() => setDriver(person.id)}>{person.name}</button>)}</div></fieldset>
+      <div className="stack guardian-flow-actions"><Button type="submit" disabled={code.length !== pairCodeLength || !driver || !name.trim()}>{copy.connect}</Button><p className="small muted guardian-demo-note">{copy.carPairDemoHint}</p></div>
     </form>
   </div></>;
 }

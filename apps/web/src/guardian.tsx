@@ -53,7 +53,8 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
       {pickup.enRouteAt != null && now - pickup.enRouteAt <= 5 * minute && !compact && <Button variant="plain" onClick={() => setOpen('undo')}>{copy.undoDeparture}</Button>}
       {!compact && <Button variant="plain" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button>}</>;
   } else if (assignee && pickup.status === 'arrived') {
-    const phone = state.live ? state.members.find((person) => person.id === pickup.requester.id)?.phone : undefined;
+    const people: readonly { id: string; phone?: string }[] = pickup.requester.kind === 'rider' ? state.riders : state.members;
+    const phone = state.live ? people.find((person) => person.id === pickup.requester.id)?.phone : undefined;
     const callLabel = copy.call(nameOf(state, pickup.requester.id));
     buttons = <>{pickup.notMetAt != null && compact && (phone ? <a className="button button--primary" href={`tel:${phone}`}><Phone size={19} />{callLabel}</a> : !state.live && <Button onClick={() => toast(copy.callDemo)}><Phone size={19} />{callLabel}</Button>)}
       {(!compact || pickup.notMetAt == null || state.live && !phone) && <Button disabled={busy} onClick={() => { void change({ type: 'board', expectedVersion: version }); }}>{copy.boarded}</Button>}

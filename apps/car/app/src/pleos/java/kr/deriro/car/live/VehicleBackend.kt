@@ -55,6 +55,9 @@ internal class BackendFailure(
     val status: Int = 0,
 ) : IOException(code) {
     val transient: Boolean get() = status == 429 || status >= 500 || code in setOf("NETWORK", "RETRY", "40P01")
+
+    /** The server could not be reached at all. Only this case means the vehicle is offline. */
+    val network: Boolean get() = code == "NETWORK"
 }
 
 private data class DeviceSession(val access: String, val refresh: String, val expiresAt: Instant) {
@@ -69,12 +72,12 @@ private data class DeviceSession(val access: String, val refresh: String, val ex
     }
 }
 
-internal class VehicleBackend(private val config: BackendConfig, private val vault: ClientVault) {
+internal class VehicleBackend(private val config: BackendConfig, private val vault: ClientVault) : PickupBackend {
     private val authLock = Mutex()
     private var restored = false
     private var session: DeviceSession? = null
 
-    suspend fun rpc(name: String, arguments: JSONObject = JSONObject()): JSONObject {
+    override suspend fun rpc(name: String, arguments: JSONObject): JSONObject {
         val access = authenticate().access
         try {
             return invokeRpc(name, arguments, access)
@@ -117,7 +120,8 @@ internal class VehicleBackend(private val config: BackendConfig, private val vau
                     vault.write(SESSION, null)
                     vault.write(FEED_SLOT, null)
                     vault.write(TICKET_SLOT, null)
-                    vault.write(NAV_REPORT_SLOT, null)
+                    vault.write(NAV_REPORTS_SLOT, null)
+                    vault.write(NavReportQueue.LEGACY_SLOT, null)
                 }
                 session = null
                 throw BackendFailure("SESSION_EXPIRED")
@@ -154,7 +158,7 @@ internal class VehicleBackend(private val config: BackendConfig, private val vau
                     while (true) {
                         val count = reader.read(buffer)
                         if (count < 0) break
-                        if (length + count > 1_000_000) throw BackendFailure("RESPONSE_TOO_LARGE")
+                        if (length + count > 1_000_000) throw BackendFailure("RESPONSE_TOO_LARGE", status = status)
                         append(buffer, 0, count)
                     }
                 }
@@ -164,7 +168,7 @@ internal class VehicleBackend(private val config: BackendConfig, private val vau
                 val code = response?.string("error_code") ?: response?.string("code") ?: "HTTP_$status"
                 throw BackendFailure(code, response?.optJSONObject("detail"), status)
             }
-            response ?: throw BackendFailure("INVALID_RESPONSE")
+            response ?: throw BackendFailure("INVALID_RESPONSE", status = status)
         } catch (failure: BackendFailure) {
             throw failure
         } catch (_: IOException) {
@@ -178,7 +182,7 @@ internal class VehicleBackend(private val config: BackendConfig, private val vau
         private const val SESSION = "session"
         const val FEED_SLOT = "feed"
         const val TICKET_SLOT = "ticket"
-        const val NAV_REPORT_SLOT = "nav_report"
+        const val NAV_REPORTS_SLOT = NavReportQueue.SLOT
 
         fun unwrap(response: JSONObject): JSONObject {
             if (response.optBoolean("ok")) return response.optJSONObject("data") ?: throw BackendFailure("INVALID_RESPONSE")

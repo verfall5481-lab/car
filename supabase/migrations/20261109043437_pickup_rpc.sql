@@ -44,9 +44,30 @@ create function deriro_private.err(p_code text, p_detail jsonb default '{}')
 returns jsonb language sql immutable set search_path = ''
 as $$ select jsonb_build_object('ok', false, 'error', jsonb_build_object('code', p_code, 'detail', p_detail)) $$;
 
+-- Raw GPS fixes never leave the database through an RPC response.
+create function deriro_private.safe_pickup(p_pickup public.pickups)
+returns jsonb language sql stable set search_path = '' as $$
+  select to_jsonb(p_pickup) - array['raw_lat','raw_lng','raw_accuracy_m']
+$$;
+
 create function deriro_private.pickup_result(p_pickup public.pickups)
 returns jsonb language sql stable set search_path = ''
-as $$ select deriro_private.ok(jsonb_build_object('pickup', to_jsonb(p_pickup))) $$;
+as $$ select deriro_private.ok(jsonb_build_object('pickup', deriro_private.safe_pickup(p_pickup))) $$;
+
+create function deriro_private.rate_retry(p_principal uuid, p_action text, p_limit int, p_window interval)
+returns int language plpgsql set search_path = '' as $$
+declare bucket deriro_private.rate_limits;
+begin
+  insert into deriro_private.rate_limits as r(principal, action, resets_at)
+    values (p_principal, p_action, now() + p_window)
+  on conflict (principal, action) do update set
+    hits = case when r.resets_at <= now() then 1 else least(r.hits + 1, p_limit + 1) end,
+    resets_at = case when r.resets_at <= now() then now() + p_window else r.resets_at end
+  returning * into bucket;
+  if bucket.hits <= p_limit then return 0; end if;
+  return greatest(1, ceil(extract(epoch from bucket.resets_at - now()))::int);
+end
+$$;
 
 create function deriro_private.add_event(p_pickup public.pickups, p_actor deriro_private.actor,
   p_type text, p_payload jsonb default '{}')
@@ -241,7 +262,7 @@ create function deriro_private.vehicle_start_result(p_pickup public.pickups)
 returns jsonb language sql stable set search_path = ''
 as $$
   select deriro_private.ok(jsonb_build_object(
-    'pickup', to_jsonb(p_pickup) - array['raw_lat','raw_lng','raw_accuracy_m'], 'nav_session_id', p_pickup.nav_session_id,
+    'pickup', deriro_private.safe_pickup(p_pickup), 'nav_session_id', p_pickup.nav_session_id,
     'destination_revision', p_pickup.destination_revision,
     'dest', jsonb_build_object('lat', p_pickup.dest_lat, 'lng', p_pickup.dest_lng, 'label', p_pickup.dest_label, 'note', p_pickup.pin_note)))
 $$;
@@ -377,8 +398,12 @@ begin
       event_type := 'accepted';
 
     when 'offer' then
-      if not is_assignee or not is_driver then return deriro_private.err('NOT_ASSIGNEE'); end if;
+      -- A member who has since lost can_drive can still hand off a trip they hold. A vehicle offers for its driver.
+      if not is_assignee or (actor.kind = 'vehicle' and not is_driver) then return deriro_private.err('NOT_ASSIGNEE'); end if;
       if actor.member_id is distinct from pickup.assignee_member_id then return deriro_private.err('NOT_ASSIGNEE'); end if;
+      -- A vehicle hands off only by declining, to every driver at once (2.2). Choosing a recipient or writing a note
+      -- is a phone action of the assignee.
+      if actor.kind = 'vehicle' and (target_id is not null or note is not null) then return deriro_private.err('FORBIDDEN'); end if;
       if pickup.status <> 'assigned' then return deriro_private.err('INVALID_STATE'); end if;
       if target_id = actor.member_id then return deriro_private.err('CANNOT_ACCEPT_OWN_OFFER'); end if;
       if target_id is not null and not deriro_private.eligible_driver(pickup.family_id, target_id, pickup.rider_member_id) then
@@ -462,6 +487,9 @@ begin
 
     when 'depart' then
       if actor.kind <> 'member' or not is_assignee then return deriro_private.err('NOT_ASSIGNEE'); end if;
+      -- An assignee whose can_drive was turned off after accepting holds the trip until it is handed off, but cannot
+      -- start driving it (23.1). The vehicle path checks the same permission through is_driver.
+      if not is_driver then return deriro_private.err('FORBIDDEN'); end if;
       if pickup.status <> 'assigned' then return deriro_private.err('INVALID_STATE'); end if;
       if not pickup.location_confirmed then return deriro_private.err('LOCATION_UNCONFIRMED'); end if;
       perform deriro_private.resolve_offer(offer.id, 'cancelled');

@@ -206,3 +206,16 @@ test("a pin and a saved point are confirmed, GPS must be accurate or explicitly 
   assert.equal(confirmed.destinationRevision, 1);
   assert.equal(successful(act(confirmed, dad, { type: "depart", expectedVersion: 2 })).status, "en_route");
 });
+
+test("permission parity with SQL: lost can_drive keeps handoff, blocks departure; a car offers only to everyone", () => {
+  const held = pickup({ status: "assigned", assigneeId: "passenger", acceptedAt: now, offer: null, version: 2 });
+  rejected(act(held, { kind: "member", id: "passenger" }, { type: "depart", expectedVersion: 2 }), "FORBIDDEN");
+  const handedOff = successful(act(held, { kind: "member", id: "passenger" }, { type: "offer", expectedVersion: 2, offerId: "o1", toMemberId: dad.id, note: "야근" }));
+  assert.equal(handedOff.offer?.toMemberId, dad.id);
+  assert.equal(handedOff.assigneeId, "passenger");
+  const dads = pickup({ status: "assigned", assigneeId: dad.id, vehicleId: car.id, acceptedAt: now, offer: null, version: 2 });
+  rejected(act(dads, car, { type: "offer", expectedVersion: 2, offerId: "o2", toMemberId: mom.id }), "FORBIDDEN");
+  rejected(act(dads, car, { type: "offer", expectedVersion: 2, offerId: "o3", note: "못 가요" }), "FORBIDDEN");
+  const toEveryone = successful(act(dads, car, { type: "offer", expectedVersion: 2, offerId: "o4" }));
+  assert.equal(toEveryone.offer?.toMemberId, null);
+});

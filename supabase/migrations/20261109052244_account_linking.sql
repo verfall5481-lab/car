@@ -1,80 +1,4 @@
-alter table public.families add column timezone text not null default 'Asia/Seoul';
-alter table public.family_members
-  add column phone_e164 text check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),
-  add column sms_opt_in boolean not null default false;
-alter table public.riders add column phone_e164 text check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$');
-alter table public.rider_devices add column user_agent text, add column last_seen_at timestamptz not null default now();
-alter table public.rider_devices drop constraint rider_devices_auth_user_id_key;
-create unique index rider_devices_active_auth on public.rider_devices(auth_user_id) where revoked_at is null;
-create index rider_devices_rider_active on public.rider_devices(rider_id) where revoked_at is null;
-create unique index family_members_active_name on public.family_members(family_id, display_name) where left_at is null;
-create unique index riders_active_name on public.riders(family_id, display_name) where archived_at is null;
-create unique index vehicles_active_name on public.vehicles(family_id, nickname) where revoked_at is null;
-
-create table public.consents (
-  id uuid primary key default gen_random_uuid(),
-  family_id uuid not null references public.families on delete cascade,
-  member_id uuid,
-  rider_id uuid,
-  granted_by_member_id uuid,
-  granted_by_rider_id uuid,
-  purpose text not null check (purpose in ('privacy','member_location','rider_location')),
-  version text not null check (char_length(version) between 1 and 40),
-  granted_at timestamptz not null default now(),
-  check (num_nonnulls(member_id, rider_id) = 1),
-  check (num_nonnulls(granted_by_member_id, granted_by_rider_id) = 1),
-  foreign key (family_id, member_id) references public.family_members(family_id, id) on delete cascade,
-  foreign key (family_id, rider_id) references public.riders(family_id, id) on delete cascade,
-  foreign key (family_id, granted_by_member_id) references public.family_members(family_id, id) on delete cascade,
-  foreign key (family_id, granted_by_rider_id) references public.riders(family_id, id) on delete cascade
-);
-alter table public.consents enable row level security;
-revoke all on public.consents from public, anon, authenticated, service_role;
-
-create table deriro_private.code_secret (
-  singleton boolean primary key default true check (singleton),
-  pepper text not null
-);
-insert into deriro_private.code_secret(pepper) values (gen_random_uuid()::text || gen_random_uuid()::text);
-
-create table deriro_private.link_codes (
-  id uuid primary key default gen_random_uuid(),
-  kind text not null check (kind in ('family','rider','vehicle')),
-  code_hash bytea not null unique,
-  family_id uuid references public.families on delete cascade,
-  member_id uuid,
-  rider_id uuid,
-  vehicle_auth_user_id uuid references auth.users on delete cascade,
-  channel text check (channel in ('qr','sms')),
-  used_at timestamptz,
-  revoked_at timestamptz,
-  expires_at timestamptz not null,
-  created_at timestamptz not null default now(),
-  foreign key (family_id, member_id) references public.family_members(family_id, id) on delete cascade,
-  foreign key (family_id, rider_id) references public.riders(family_id, id) on delete cascade
-);
-create index link_codes_rider on deriro_private.link_codes(rider_id, created_at) where rider_id is not null;
-create index link_codes_vehicle on deriro_private.link_codes(vehicle_auth_user_id) where kind = 'vehicle';
-
-create table deriro_private.rate_limits (
-  principal uuid not null,
-  action text not null,
-  hits int not null default 1,
-  resets_at timestamptz not null,
-  primary key (principal, action)
-);
-alter table deriro_private.code_secret enable row level security;
-alter table deriro_private.link_codes enable row level security;
-alter table deriro_private.rate_limits enable row level security;
-
-create table deriro_private.sms_reservations (
-  family_id uuid not null references public.families on delete cascade,
-  local_day date not null,
-  reference_key text not null,
-  primary key (family_id,local_day,reference_key)
-);
-alter table deriro_private.sms_reservations enable row level security;
-
+-- Guardian, rider device and vehicle linking RPCs. Tables live in the foundation migration.
 create function deriro_private.reserve_sms_budget(p_family_id uuid,p_reference_key text)
 returns boolean language plpgsql set search_path = '' as $$
 declare local_day_arg date := (now() at time zone 'Asia/Seoul')::date;
@@ -86,21 +10,6 @@ begin
     then return false; end if;
   insert into deriro_private.sms_reservations(family_id,local_day,reference_key) values(p_family_id,local_day_arg,p_reference_key);
   return true;
-end
-$$;
-
-create function deriro_private.rate_retry(p_principal uuid, p_action text, p_limit int, p_window interval)
-returns int language plpgsql set search_path = '' as $$
-declare bucket deriro_private.rate_limits;
-begin
-  insert into deriro_private.rate_limits as r(principal, action, resets_at)
-    values (p_principal, p_action, now() + p_window)
-  on conflict (principal, action) do update set
-    hits = case when r.resets_at <= now() then 1 else least(r.hits + 1, p_limit + 1) end,
-    resets_at = case when r.resets_at <= now() then now() + p_window else r.resets_at end
-  returning * into bucket;
-  if bucket.hits <= p_limit then return 0; end if;
-  return greatest(1, ceil(extract(epoch from bucket.resets_at - now()))::int);
 end
 $$;
 
@@ -161,27 +70,52 @@ returns void language plpgsql set search_path = '' as $$
 declare
   old_pickup public.pickups;
   successor_id uuid;
+  previous_status public.pickup_status;
 begin
   -- Lock every affected pickup before offers or vehicle references.
   perform 1 from public.pickups p where p.family_id = p_member.family_id
     and p.status in ('open','assigned','en_route','arrived') order by p.id for update;
+
+  -- A departed member no longer needs a ride. Closing their unfinished pickups stops escalation and SMS,
+  -- and the cancellation notice (16.1) tells whoever had already accepted or departed.
+  for old_pickup in select * from public.pickups p where p.family_id = p_member.family_id
+    and p.rider_member_id = p_member.id and p.status in ('open','assigned','en_route','arrived') order by p.id
+  loop
+    update public.pickup_offers set status = 'cancelled', resolved_at = now() where pickup_id = old_pickup.id and status = 'pending';
+    update public.vehicles set active_pickup_id = null, active_nav_session_id = null, active_destination_revision = null
+      where family_id = old_pickup.family_id and active_pickup_id = old_pickup.id;
+    update public.pickups set status = 'cancelled', cancel_reason = 'cancelled', cancelled_at = now(),
+      cancelled_by_kind = 'system', is_customized = true
+      where id = old_pickup.id returning * into old_pickup;
+    perform deriro_private.add_event(old_pickup, null, 'cancelled', '{"cause":"requester_left"}');
+  end loop;
+
+  -- Pickups the member was handling move to the owner (8.3 remove_member), or to another driver when the
+  -- owner cannot drive. The successor has not departed, so an en_route or arrived trip returns to assigned
+  -- and its navigation session ends. Without any eligible driver the pickup is cancelled.
   for old_pickup in select * from public.pickups p where p.family_id = p_member.family_id
     and p.assignee_member_id = p_member.id and p.status in ('assigned','en_route','arrived') order by p.id
   loop
+    previous_status := old_pickup.status;
+    update public.pickup_offers set status = 'cancelled', resolved_at = now() where pickup_id = old_pickup.id and status = 'pending';
+    update public.vehicles set active_pickup_id = null, active_nav_session_id = null, active_destination_revision = null
+      where family_id = old_pickup.family_id and active_pickup_id = old_pickup.id;
     select m.id into successor_id from public.family_members m where m.family_id = p_member.family_id
       and m.id <> p_member.id and m.id is distinct from old_pickup.rider_member_id and m.left_at is null and m.can_drive
       order by (m.id = p_successor) desc, m.id limit 1;
     if successor_id is null then
-      update public.pickups set status = 'cancelled', cancel_reason = 'cancelled', cancelled_at = now()
+      update public.pickups set status = 'cancelled', cancel_reason = 'cancelled', cancelled_at = now(),
+        cancelled_by_kind = 'system', is_customized = true
         where id = old_pickup.id returning * into old_pickup;
-      perform deriro_private.add_event(old_pickup, null, 'cancelled');
+      perform deriro_private.add_event(old_pickup, null, 'cancelled', '{"cause":"assignee_left"}');
     else
-      update public.pickups set assignee_member_id = successor_id, vehicle_id = null, is_customized = true,
-        accepted_at = now(), nav_session_id = null, nav_destination_revision = null, nav_status = 'none'
+      update public.pickups set status = 'assigned', assignee_member_id = successor_id, vehicle_id = null, is_customized = true,
+        accepted_at = now(), en_route_at = null, arrived_at = null, arrived_source = null,
+        nav_session_id = null, nav_destination_revision = null, nav_status = 'none', last_start_action_id = null
         where id = old_pickup.id returning * into old_pickup;
-      perform deriro_private.add_event(old_pickup, null, 'member_reassigned', jsonb_build_object('previous_assignee_id', p_member.id));
+      perform deriro_private.add_event(old_pickup, null, 'member_reassigned', jsonb_build_object(
+        'previous_assignee_id', p_member.id, 'previous_status', previous_status));
     end if;
-    update public.pickup_offers set status = 'cancelled', resolved_at = now() where pickup_id = old_pickup.id and status = 'pending';
   end loop;
   update public.pickup_offers set status = 'cancelled', resolved_at = now()
     where family_id = p_member.family_id and status = 'pending' and p_member.id in (from_member_id, to_member_id);
@@ -225,6 +159,7 @@ declare
   basis text;
   limit_count int;
   result jsonb;
+  violated text;
 begin
   if uid is null then return deriro_private.err('NOT_AUTHENTICATED'); end if;
   select u.is_anonymous into anonymous from auth.users u where u.id = uid;
@@ -254,6 +189,11 @@ begin
     then return deriro_private.err('VALIDATION'); end if;
     perform pg_advisory_xact_lock(hashtextextended(uid::text, 7110));
     if exists(select 1 from public.family_members m where m.auth_user_id = uid and m.left_at is null)
+      then return deriro_private.err('ALREADY_IN_FAMILY'); end if;
+    -- One auth user is one principal (2.1). An anonymous rider device or vehicle that later converts to a permanent
+    -- account keeps its binding, so it cannot also become a guardian of this or any other family.
+    if exists(select 1 from public.rider_devices d where d.auth_user_id = uid and d.revoked_at is null)
+      or exists(select 1 from public.vehicles v where v.auth_user_id = uid and v.revoked_at is null)
       then return deriro_private.err('ALREADY_IN_FAMILY'); end if;
     if p_action = 'join_family' then
       retry_after := deriro_private.rate_retry(uid, 'join_family', 10, interval '10 minutes');
@@ -512,8 +452,11 @@ begin
       if not found then return deriro_private.err('PAIR_CODE_INVALID'); end if;
       perform pg_advisory_xact_lock(hashtextextended(code_row.vehicle_auth_user_id::text,7110));
       select * into code_row from deriro_private.link_codes c where c.id = code_row.id for update;
+      -- The code binds the anonymous vehicle session that asked for it. A session that has since converted to a
+      -- permanent account may be a guardian elsewhere, so it can no longer become a vehicle (2.1).
       if not found or code_row.revoked_at is not null or code_row.used_at is not null
         or exists(select 1 from public.rider_devices d where d.auth_user_id = code_row.vehicle_auth_user_id and d.revoked_at is null)
+        or not exists(select 1 from auth.users u where u.id = code_row.vehicle_auth_user_id and u.is_anonymous)
         then return deriro_private.err('PAIR_CODE_INVALID'); end if;
       if code_row.expires_at <= now() then return deriro_private.err('PAIR_CODE_EXPIRED'); end if;
       if exists(select 1 from public.vehicles v where v.auth_user_id = code_row.vehicle_auth_user_id and v.revoked_at is null)
@@ -534,7 +477,16 @@ begin
     else return deriro_private.err('VALIDATION');
   end case;
 exception
-  when unique_violation then return deriro_private.err('NAME_TAKEN');
+  -- Only the active-name indexes are user-facing conflicts. Any other violation is a defect and propagates.
+  when unique_violation then
+    get stacked diagnostics violated = constraint_name;
+    if violated in ('family_members_active_name','riders_active_name','vehicles_active_name') then
+      return deriro_private.err('NAME_TAKEN');
+    elsif violated = 'family_members_active_user' then
+      return deriro_private.err('ALREADY_IN_FAMILY');
+    end if;
+    raise;
+  -- Malformed client input (a boolean, integer or ID that does not parse) is a validation error.
   when invalid_text_representation or numeric_value_out_of_range then return deriro_private.err('VALIDATION');
 end
 $$;
@@ -567,7 +519,7 @@ begin
 end
 $$;
 
-revoke execute on function deriro_private.rate_retry(uuid,text,int,interval), deriro_private.code_digest(text,text),
+revoke execute on function deriro_private.code_digest(text,text),
   deriro_private.reserve_sms_budget(uuid,text),
   deriro_private.new_link(text,uuid,uuid,uuid,uuid,text), deriro_private.public_member(public.family_members),
   deriro_private.public_vehicle(public.vehicles), deriro_private.leave_member(public.family_members,uuid)

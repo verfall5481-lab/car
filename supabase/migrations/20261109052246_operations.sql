@@ -1,80 +1,4 @@
-alter table public.places add column kind text not null default 'other'
-  check (kind in ('home','school','academy','other'));
-alter table public.routines add column active boolean not null default true;
-alter table public.pickups
-  add column routine_offer_created_at timestamptz,
-  add column closed_unconfirmed_at timestamptz,
-  add column arrived_source text check (arrived_source in ('nav_callback','manual')),
-  add column completed_by_kind text check (completed_by_kind in ('guardian','rider','vehicle')),
-  add column cancelled_by_kind text check (cancelled_by_kind in ('guardian','rider','vehicle','system')),
-  add column raw_lat double precision check (raw_lat between -90 and 90),
-  add column raw_lng double precision check (raw_lng between -180 and 180),
-  add column raw_accuracy_m double precision check (raw_accuracy_m >= 0);
--- Keep raw fixes off the direct API. Feed RPCs also strip these fields.
-revoke select on public.pickups from authenticated;
-grant select (id, family_id, rider_id, rider_member_id, source, routine_id, occurrence_date, is_customized, assignment_round,
-  status, assignee_member_id, vehicle_id, place_id, pickup_point_id, location_source, location_confirmed, dest_lat,
-  dest_lng, dest_label, pin_note, destination_revision, nav_status, wanted_at, accepted_at, en_route_at, arrived_at,
-  completed_at, cancelled_at, cancel_reason, expired_at, rider_ready_at, not_met_reported_at, version, created_at, updated_at,
-  closed_unconfirmed_at, arrived_source, completed_by_kind, cancelled_by_kind) on public.pickups to authenticated;
-
-alter table public.pickups drop constraint pickups_cancel_reason_check;
-alter table public.pickups add check (cancel_reason in (
-  'cancelled','skipped','not_met','resolved_by_phone','mistake','other_way_home','other','routine_archived','child_cancelled'
-));
-alter table public.vehicle_states
-  add column range_km double precision check (range_km between 0 and 3000),
-  add column fuel_pct double precision check (fuel_pct between 0 and 100),
-  add column soc_pct double precision check (soc_pct between 0 and 100),
-  add column energy_type text check (energy_type in ('ice','hev','phev','bev','fcev','gasoline','diesel','hybrid','electric','hydrogen','unknown')),
-  add column ignition text check (ignition in ('off','acc','on','unknown')),
-  add column lat double precision check (lat between -90 and 90),
-  add column lng double precision check (lng between -180 and 180),
-  add column location_at timestamptz,
-  add column is_demo_value boolean not null default false,
-  add check (num_nonnulls(lat,lng,location_at) in (0,3));
-
-create table public.vehicle_alerts (
-  id uuid primary key default gen_random_uuid(),
-  family_id uuid not null,
-  vehicle_id uuid not null,
-  type text not null default 'low_range' check (type = 'low_range'),
-  range_km double precision not null,
-  required_km double precision not null,
-  pickup_count int not null,
-  pickup_ids uuid[] not null,
-  alert_revision int not null default 1,
-  is_demo_value boolean not null,
-  acknowledged_at timestamptz,
-  resolved_at timestamptz,
-  updated_at timestamptz not null default now(),
-  foreign key (family_id, vehicle_id) references public.vehicles(family_id, id) on delete cascade
-);
-create unique index vehicle_alert_open on public.vehicle_alerts(vehicle_id) where resolved_at is null;
-create index vehicle_alert_family on public.vehicle_alerts(family_id) where resolved_at is null;
-alter table public.vehicle_alerts enable row level security;
-revoke all on public.vehicle_alerts from public, anon, authenticated, service_role;
-
-create table deriro_private.pickup_declines (
-  pickup_id uuid references public.pickups on delete cascade,
-  member_id uuid references public.family_members on delete cascade,
-  primary key (pickup_id, member_id)
-);
-alter table deriro_private.pickup_declines enable row level security;
-create index pickups_rider_feed on public.pickups(rider_id,wanted_at) where rider_id is not null;
-create index pickups_escalations on public.pickups(status,wanted_at) where status in ('open','assigned','arrived');
-create index offers_expiry on public.pickup_offers(expires_at) where status = 'pending';
-
-create function deriro_private.safe_pickup(p_pickup public.pickups)
-returns jsonb language sql stable set search_path = '' as $$
-  select to_jsonb(p_pickup) - array['raw_lat','raw_lng','raw_accuracy_m']
-$$;
-
-create or replace function deriro_private.pickup_result(p_pickup public.pickups)
-returns jsonb language sql stable set search_path = '' as $$
-  select deriro_private.ok(jsonb_build_object('pickup',deriro_private.safe_pickup(p_pickup)))
-$$;
-
+-- Places, routines, feeds and vehicle telemetry RPCs. Tables live in the foundation migration.
 create function deriro_private.rider_name(p_pickup public.pickups)
 returns text language sql stable set search_path = '' as $$
   select coalesce(
@@ -100,6 +24,9 @@ returns boolean language sql immutable set search_path = '' as $$
   select p_status in ('open','assigned','en_route','arrived')
 $$;
 
+-- F-16 / A.2: required distance is an estimate. "sufficient" needs every pickup computed and a range
+-- reading that is not stale (6 hours, the P-06 freshness rule). A shortage can still be reported from a
+-- reading up to 24 hours old (A.3), because warning early is the safe direction.
 create function deriro_private.range_summary(p_vehicle public.vehicles, p_pickup public.pickups default null)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
@@ -108,12 +35,14 @@ declare
   base_lng double precision;
   origin text;
   total int;
+  computable int;
   ids uuid[];
   km double precision;
-  fresh_range double precision;
+  known_range double precision;
+  stale boolean;
 begin
   select * into telemetry from public.vehicle_states s where s.vehicle_id = p_vehicle.id;
-  if telemetry.location_at between now() - interval '30 minutes' and now() then
+  if telemetry.location_at >= now() - interval '30 minutes' then
     base_lat := telemetry.lat;
     base_lng := telemetry.lng;
     origin := 'vehicle';
@@ -131,19 +60,27 @@ begin
       (p_pickup.id is null and p.vehicle_id = p_vehicle.id and p.status = 'assigned'
         and p.wanted_at between now() and now()+interval '24 hours')
     );
-  if telemetry.collected_at between now() - interval '24 hours' and now() then fresh_range := telemetry.range_km; end if;
-  return jsonb_build_object('required_km',round(km::numeric,1),'computable',case when origin is null then 0 else total end,
-    'total',total,'origin_source',origin,'pickup_ids',to_jsonb(ids),'range_km',fresh_range,'is_demo_value',coalesce(telemetry.is_demo_value,false),
-    'is_stale',coalesce(telemetry.collected_at < now()-interval '6 hours',true),
-    'verdict',case when total = 0 or origin is null or fresh_range is null then 'check_required'
-      when fresh_range < km + greatest(15,km * 0.2) then 'low' else 'sufficient' end);
+  -- One origin serves every pickup, so either all of them are computable or none is.
+  computable := case when origin is null then 0 else total end;
+  if telemetry.collected_at >= now() - interval '24 hours' then known_range := telemetry.range_km; end if;
+  stale := coalesce(telemetry.collected_at < now() - interval '6 hours', true);
+  return jsonb_build_object('required_km',round(km::numeric,1),'computable',computable,
+    'total',total,'origin_source',origin,'pickup_ids',to_jsonb(ids),'range_km',known_range,'is_demo_value',coalesce(telemetry.is_demo_value,false),
+    'is_stale',stale,
+    'verdict',case when total = 0 or computable = 0 or known_range is null or km is null then 'check_required'
+      when known_range < km + greatest(15,km * 0.2) then 'low'
+      when computable = total and not stale then 'sufficient'
+      else 'check_required' end);
 end
 $$;
 
+-- A.3. Missing or day-old telemetry neither creates nor closes a warning. With no assignment in the window
+-- the warning closes. A warning closes otherwise only on a "sufficient" verdict, which needs fresh data.
 create function deriro_private.recompute_low_range(p_vehicle_id uuid)
 returns jsonb language plpgsql set search_path = '' as $$
 declare
   vehicle public.vehicles;
+  telemetry public.vehicle_states;
   summary jsonb;
   alert public.vehicle_alerts;
   needed double precision;
@@ -152,9 +89,12 @@ declare
 begin
   select * into vehicle from public.vehicles where id = p_vehicle_id and revoked_at is null;
   if not found then return null; end if;
+  select * into telemetry from public.vehicle_states s where s.vehicle_id = vehicle.id;
+  if telemetry.vehicle_id is null or telemetry.range_km is null or telemetry.collected_at < now() - interval '24 hours' then
+    return null;
+  end if;
   summary := deriro_private.range_summary(vehicle);
   if summary->>'verdict' <> 'low' then
-    -- Unknown/stale telemetry cannot resolve an existing warning.
     if summary->>'verdict' = 'sufficient' or (summary->>'total')::int = 0 then
       update public.vehicle_alerts set resolved_at = now(),updated_at = now() where vehicle_id = vehicle.id and resolved_at is null;
     end if;
@@ -220,12 +160,20 @@ declare
   occurrence public.pickups;
   effective_at timestamptz;
   tz text;
+  driver_id uuid;
+  car_id uuid;
 begin
   if new is not distinct from old then return new; end if;
   if not new.active and new.archived_at is null then return new; end if;
   select timezone into tz from public.families where id = new.family_id;
   select * into place from public.places where id = new.place_id and archived_at is null;
   select * into point from public.pickup_points where id = new.pickup_point_id and archived_at is null;
+  -- The default driver takes a revised occurrence only while still eligible, by the same rule as ensure_occurrences.
+  -- A default whose can_drive was turned off must not become the assignee of a trip they never accepted (23.1).
+  select m.id into driver_id from public.family_members m where m.family_id = new.family_id
+    and m.id = new.default_assignee_member_id and m.left_at is null and m.can_drive and m.id is distinct from new.rider_member_id;
+  select v.id into car_id from public.vehicles v where v.family_id = new.family_id and v.id = new.default_vehicle_id
+    and v.revoked_at is null and v.current_driver_member_id = driver_id;
   for occurrence in select * from public.pickups p
     where p.routine_id = new.id and not p.is_customized and p.wanted_at >= now()
       and p.status in ('open','assigned') order by p.id for update
@@ -239,9 +187,9 @@ begin
       update public.pickup_offers set status = 'cancelled',resolved_at = now() where pickup_id = occurrence.id and status = 'pending';
       update public.pickups set status = 'cancelled',cancelled_at = now(),cancel_reason = 'routine_archived' where id = occurrence.id;
     else
-      update public.pickups set status = case when new.default_assignee_member_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
-        rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = new.default_assignee_member_id,
-        vehicle_id = case when new.default_assignee_member_id is null then null else new.default_vehicle_id end,
+      update public.pickups set status = case when driver_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
+        rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = driver_id,
+        vehicle_id = car_id,
         place_id = new.place_id,pickup_point_id = point.id,location_source = case when point.id is null
           then 'saved_place'::public.location_source else 'saved_point'::public.location_source end,
         location_confirmed = true,dest_lat = coalesce(point.lat,place.lat),dest_lng = coalesce(point.lng,place.lng),
@@ -283,6 +231,7 @@ declare
   end_arg date := (p_data->>'end_date')::date;
   active_arg boolean := coalesce((p_data->>'active')::boolean,true);
   blockers jsonb;
+  violated text;
 begin
   if auth.uid() is null then return deriro_private.err('NOT_AUTHENTICATED'); end if;
   if actor.kind is distinct from 'member' then return deriro_private.err('NOT_GUARDIAN'); end if;
@@ -389,7 +338,10 @@ begin
   end if;
   return deriro_private.ok(jsonb_build_object('routine',to_jsonb(routine)));
 exception
-  when unique_violation then return deriro_private.err('NAME_TAKEN');
+  when unique_violation then
+    get stacked diagnostics violated = constraint_name;
+    if violated = 'pickup_points_active_label' then return deriro_private.err('NAME_TAKEN'); end if;
+    raise;
   when invalid_text_representation or numeric_value_out_of_range or invalid_datetime_format or datetime_field_overflow then return deriro_private.err('VALIDATION');
 end
 $$;
@@ -580,8 +532,8 @@ begin
           'place',exists(select 1 from public.places p where p.family_id=fam.id and p.archived_at is null),
           'vehicle',exists(select 1 from public.vehicles v where v.family_id=fam.id and v.revoked_at is null)));
     when 'today' then
+      -- Read only. Occurrences come from routine saves, ensure_occurrences and the hourly scheduler (section 9).
       if p_days is null or p_days not between 1 and 2 then return deriro_private.err('VALIDATION'); end if;
-      perform deriro_private.ensure_occurrences(fam.id,p_days);
       boundary := ((now() at time zone fam.timezone)::date + p_days)::timestamp at time zone fam.timezone;
       with visible as (
         select p as row,p.wanted_at,
@@ -645,6 +597,7 @@ declare
   lng_arg double precision := (p_data->>'lng')::double precision;
   id_arg uuid := (p_data->>'id')::uuid;
   version_arg int := (p_data->>'version')::int;
+  violated text;
 begin
   if auth.uid() is null then return deriro_private.err('NOT_AUTHENTICATED'); end if;
   if p_action='ack' and actor.kind='member' then
@@ -707,12 +660,21 @@ begin
     else return deriro_private.err('VALIDATION');
   end case;
 exception
-  when invalid_text_representation or numeric_value_out_of_range or check_violation or invalid_datetime_format or datetime_field_overflow
+  -- Telemetry outside the vehicle_states value checks is a validation error; any other check violation
+  -- (including one raised by a nested transition) is a defect and propagates.
+  when check_violation then
+    get stacked diagnostics violated = constraint_name;
+    if violated in ('vehicle_states_gear_check','vehicle_states_range_km_check','vehicle_states_fuel_pct_check',
+      'vehicle_states_soc_pct_check','vehicle_states_energy_type_check','vehicle_states_ignition_check',
+      'vehicle_states_lat_check','vehicle_states_lng_check','vehicle_states_location_check')
+    then return deriro_private.err('VALIDATION'); end if;
+    raise;
+  when invalid_text_representation or numeric_value_out_of_range or invalid_datetime_format or datetime_field_overflow
     then return deriro_private.err('VALIDATION');
 end
 $$;
 
-revoke execute on function deriro_private.safe_pickup(public.pickups),deriro_private.rider_name(public.pickups),
+revoke execute on function deriro_private.rider_name(public.pickups),
   deriro_private.member_name(uuid),deriro_private.pickup_feed_row(public.pickups),deriro_private.active_status(public.pickup_status),
   deriro_private.range_summary(public.vehicles,public.pickups),deriro_private.recompute_low_range(uuid),
   deriro_private.ensure_occurrences(uuid,int),deriro_private.revise_routine(),deriro_private.vehicle_state_row(public.vehicle_states),

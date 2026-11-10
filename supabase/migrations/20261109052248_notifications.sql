@@ -1,60 +1,4 @@
-alter table public.families add column is_demo boolean not null default false,
-  add column demo_time_scale int not null default 1 check (demo_time_scale between 1 and 60);
-
-create table public.push_subscriptions (
-  id uuid primary key default gen_random_uuid(),
-  family_id uuid not null references public.families on delete cascade,
-  auth_user_id uuid not null references auth.users on delete cascade,
-  endpoint text not null unique,
-  p256dh text not null,
-  auth text not null,
-  created_at timestamptz not null default now()
-);
-create index push_subscriptions_principal on public.push_subscriptions(auth_user_id);
-alter table public.push_subscriptions enable row level security;
-revoke all on public.push_subscriptions from public, anon, authenticated, service_role;
-
-create type public.outbox_status as enum ('pending','sending','sent','skipped','failed');
-create table public.notifications_outbox (
-  id bigint generated always as identity primary key,
-  family_id uuid not null references public.families on delete cascade,
-  pickup_id uuid,
-  offer_id uuid,
-  vehicle_alert_id uuid references public.vehicle_alerts on delete cascade,
-  recipient_member_id uuid,
-  recipient_rider_id uuid,
-  channel text not null check (channel in ('push','sms')),
-  template text not null,
-  payload jsonb not null default '{}',
-  expected_status public.pickup_status,
-  expected_assignment_round int,
-  expected_offer_status public.offer_status,
-  driver_only boolean not null default false,
-  dedupe_key text not null unique,
-  status public.outbox_status not null default 'pending',
-  attempts int not null default 0 check (attempts between 0 and 4),
-  scheduled_at timestamptz not null default now(),
-  claim_token uuid,
-  lease_until timestamptz,
-  last_error text,
-  sent_at timestamptz,
-  finished_at timestamptz,
-  created_at timestamptz not null default now(),
-  check (num_nonnulls(recipient_member_id,recipient_rider_id) = 1),
-  check ((status='sending') = (claim_token is not null and lease_until is not null)),
-  foreign key (family_id,pickup_id) references public.pickups(family_id,id) on delete cascade,
-  foreign key (family_id,offer_id) references public.pickup_offers(family_id,id) on delete cascade,
-  foreign key (family_id,recipient_member_id) references public.family_members(family_id,id) on delete cascade,
-  foreign key (family_id,recipient_rider_id) references public.riders(family_id,id) on delete cascade
-);
-create index notifications_outbox_due on public.notifications_outbox(scheduled_at,id) where status='pending';
-create index notifications_outbox_leases on public.notifications_outbox(lease_until,id) where status='sending';
-create index notifications_outbox_offer on public.notifications_outbox(offer_id) where status='pending';
-create index notifications_outbox_pickup_pending on public.notifications_outbox(pickup_id) where status='pending';
-create index notifications_outbox_retention on public.notifications_outbox(finished_at) where finished_at is not null;
-alter table public.notifications_outbox enable row level security;
-revoke all on public.notifications_outbox from public, anon, authenticated, service_role;
-
+-- Notification outbox, escalation scheduler, retention and maintenance. Tables live in the foundation migration.
 create function deriro_private.queue_pickup(p_pickup public.pickups,p_template text,p_key text,p_audience text,
   p_member_id uuid default null,p_channel text default 'push',p_status public.pickup_status default null,
   p_check_round boolean default false,p_offer public.pickup_offers default null,
@@ -121,6 +65,11 @@ begin
       prior_id := (new.payload->>'previous_assignee_id')::uuid;
       if prior_id is not null then perform deriro_private.queue_pickup(p,'taken_over',key,'one',prior_id,p_check_round=>true); end if;
       perform deriro_private.queue_pickup(p,'pickup_accepted',key||':assignee','one',p.assignee_member_id,p_check_round=>true);
+      -- A take-over leaves the rider screen alone (16.1). When the assignee left the family, the rider's
+      -- "who is coming" changes without anyone accepting on screen, so the rider is told.
+      if new.event_type='member_reassigned' then
+        perform deriro_private.queue_pickup(p,'child_assigned',key||':rider','rider',p_check_round=>true);
+      end if;
     when 'en_route' then
       if p.source='request' then perform deriro_private.queue_pickup(p,'pickup_en_route',key,'family',p_status=>'en_route',
         p_exclude_member=>p.assignee_member_id); end if;
@@ -281,6 +230,10 @@ declare
   subscriptions jsonb;
   geo_label text;
   demo boolean;
+  delivered uuid[];
+  merged uuid[];
+  next_status public.outbox_status;
+  geo_applied boolean;
 begin
   case p_action
     when 'claim' then
@@ -304,16 +257,30 @@ begin
 
     when 'finish' then
       if target_state is null or target_state='sending' then return deriro_private.err('VALIDATION'); end if;
+      select * into job from public.notifications_outbox x
+        where x.id=job_id and x.claim_token=token and x.status='sending' and x.lease_until>now() for update;
+      if not found then return deriro_private.ok('{"updated":false}'); end if;
+      -- Subscriptions that accepted a Web Push are remembered so a retry sends only to the others.
+      select coalesce(array_agg(value::uuid order by value::uuid),'{}') into delivered
+        from jsonb_array_elements_text(case when jsonb_typeof(p_data->'delivered')='array' then p_data->'delivered' else '[]'::jsonb end);
+      select coalesce(array_agg(distinct d order by d),'{}') into merged
+        from unnest(job.delivered_subscription_ids || delivered) d;
+      -- When the attempts run out, reaching at least one of the recipient's devices counts as delivered.
+      next_status := case when target_state<>'pending' then target_state
+        when job.attempts<4 then 'pending'::public.outbox_status
+        when cardinality(merged)>0 then 'sent'::public.outbox_status
+        else 'failed'::public.outbox_status end;
       update public.notifications_outbox x set
-        status=case when target_state='pending' and x.attempts>=4 then 'failed'::public.outbox_status else target_state end,
-        scheduled_at=case when target_state='pending' and x.attempts<4 then
+        status=next_status,
+        delivered_subscription_ids=merged,
+        scheduled_at=case when next_status='pending' then
           now() + (array[interval '30 seconds',interval '2 minutes',interval '5 minutes'])[greatest(1,least(x.attempts,3))] else x.scheduled_at end,
-        finished_at=case when target_state<>'pending' or x.attempts>=4 then now() end,
-        sent_at=case when target_state='sent' then now() else x.sent_at end,
+        finished_at=case when next_status<>'pending' then now() end,
+        sent_at=case when next_status='sent' then now() else x.sent_at end,
         last_error=case when p_data->>'error' ~ '^[a-zA-Z0-9_-]{1,64}$' then p_data->>'error' end,
         claim_token=null,lease_until=null
-      where x.id=job_id and x.claim_token=token and x.status='sending' and x.lease_until>now();
-      return deriro_private.ok(jsonb_build_object('updated',found));
+      where x.id=job.id;
+      return deriro_private.ok('{"updated":true}');
 
     when 'release' then
       update public.notifications_outbox x set status='pending',attempts=greatest(x.attempts-1,0),claim_token=null,lease_until=null
@@ -370,13 +337,18 @@ begin
         end if;
         return deriro_private.ok(jsonb_build_object('valid',true,'demo',demo,'phone_e164',m.phone_e164,'pickup_id',job.pickup_id,'payload',job.payload));
       end if;
-      select coalesce(jsonb_agg(jsonb_build_object('id',s.id,'endpoint',s.endpoint,'keys',jsonb_build_object('p256dh',s.p256dh,'auth',s.auth))),'[]')
+      -- Only devices that have not accepted this job yet. delivered_count reports the ones that have.
+      select coalesce(jsonb_agg(jsonb_build_object('id',s.id,'endpoint',s.endpoint,'keys',jsonb_build_object('p256dh',s.p256dh,'auth',s.auth))
+        order by s.created_at,s.id),'[]')
       into subscriptions from public.push_subscriptions s
-      where s.family_id=job.family_id and deriro_private.push_endpoint_allowed(s.endpoint) and (
+      where s.family_id=job.family_id and deriro_private.push_endpoint_allowed(s.endpoint)
+        and not s.id=any(job.delivered_subscription_ids) and (
         s.auth_user_id=m.auth_user_id or exists(select 1 from public.rider_devices d join public.riders r on r.id=d.rider_id
           where d.auth_user_id=s.auth_user_id and d.rider_id=job.recipient_rider_id and d.revoked_at is null and r.archived_at is null)
       );
-      return deriro_private.ok(jsonb_build_object('valid',jsonb_array_length(subscriptions)>0,'subscriptions',subscriptions,
+      return deriro_private.ok(jsonb_build_object(
+        'valid',jsonb_array_length(subscriptions)>0 or cardinality(job.delivered_subscription_ids)>0,
+        'subscriptions',subscriptions,'delivered_count',cardinality(job.delivered_subscription_ids),
         'demo',demo or coalesce(a.is_demo_value,false),'pickup_id',job.pickup_id,'payload',job.payload));
 
     when 'geo_label' then
@@ -386,22 +358,20 @@ begin
       select * into job from public.notifications_outbox x where x.id=job_id and x.claim_token=token
         and x.status='sending' and x.lease_until>now() and x.channel='geo';
       if not found then return deriro_private.ok('{"updated":false}'); end if;
+      -- The area label is display text for an unconfirmed fix. Naming the row in deriro.label_refresh keeps
+      -- version and destination_revision unchanged (version_pickup), so open clients do not go stale.
+      perform set_config('deriro.label_refresh',job.pickup_id::text,true);
       update public.pickups x set dest_label=geo_label where x.id=job.pickup_id and x.location_source='gps'
         and not x.location_confirmed and deriro_private.active_status(x.status)
         and x.destination_revision=(job.payload->>'destination_revision')::int;
-      return deriro_private.ok(jsonb_build_object('updated',found));
+      geo_applied := found;
+      perform set_config('deriro.label_refresh','',true);
+      return deriro_private.ok(jsonb_build_object('updated',geo_applied));
 
     else return deriro_private.err('VALIDATION');
   end case;
 end
 $$;
-
-alter table public.notifications_outbox drop constraint notifications_outbox_channel_check;
-alter table public.notifications_outbox add check (channel in ('push','sms','geo'));
-alter table public.notifications_outbox drop constraint notifications_outbox_check;
-alter table public.notifications_outbox add check (
-  num_nonnulls(recipient_member_id,recipient_rider_id) = case when channel='geo' then 0 else 1 end
-);
 
 create function deriro_private.queue_geo_label()
 returns trigger language plpgsql set search_path = '' as $$
@@ -414,12 +384,6 @@ begin
 end
 $$;
 create trigger outbox_from_unconfirmed_gps after insert on public.pickups for each row execute function deriro_private.queue_geo_label();
-
-create table deriro_private.escalation_checks (
-  pickup_id uuid primary key references public.pickups on delete cascade,
-  checked_at timestamptz not null
-);
-alter table deriro_private.escalation_checks enable row level security;
 
 create function deriro_private.run_escalations(p_family_id uuid default null)
 returns int language plpgsql set search_path = '' as $$
@@ -544,18 +508,6 @@ begin
 end
 $$;
 
-create table public.family_feed_changes (
-  id bigint generated always as identity primary key,
-  family_id uuid not null references public.families on delete cascade,
-  created_at timestamptz not null default now()
-);
-create index family_feed_changes_family on public.family_feed_changes(family_id,created_at);
-alter table public.family_feed_changes enable row level security;
-revoke all on public.family_feed_changes from public, anon, authenticated, service_role;
-grant select on public.family_feed_changes to authenticated;
-create policy family_feed_change_select on public.family_feed_changes for select to authenticated
-  using (family_id=(select deriro_private.member_family()));
-
 create function deriro_private.dirty_family_feed()
 returns trigger language plpgsql set search_path = '' as $$
 declare
@@ -574,9 +526,6 @@ begin
     execute format('create trigger dirty_family_feed after insert or update or delete on public.%I
       for each row execute function deriro_private.dirty_family_feed()',relation);
   end loop;
-  if exists(select 1 from pg_publication where pubname='supabase_realtime') then
-    alter publication supabase_realtime add table public.family_feed_changes, public.pickup_offers;
-  end if;
 end
 $$;
 
@@ -687,7 +636,6 @@ begin
 end
 $$;
 
-grant usage on schema deriro_private to service_role;
 revoke execute on function deriro_private.queue_pickup(public.pickups,text,text,text,uuid,text,public.pickup_status,boolean,public.pickup_offers,public.offer_status,uuid),
   deriro_private.on_pickup_event(),deriro_private.on_offer_resolved(),deriro_private.routine_created_event(),
   deriro_private.skip_stale_pickup_notifications(),
@@ -746,9 +694,11 @@ create function public.svc_claim_outbox(p_limit int default 50,p_lease_sec int d
 returns jsonb language sql security invoker set search_path = ''
 as $$ select deriro_private.outbox_worker('claim',jsonb_build_object('limit',p_limit,'lease',p_lease_sec)) $$;
 
-create function public.svc_finish_outbox(p_id bigint,p_token uuid,p_status public.outbox_status,p_error text default null)
+create function public.svc_finish_outbox(p_id bigint,p_token uuid,p_status public.outbox_status,p_error text default null,
+  p_delivered_subscription_ids uuid[] default null)
 returns jsonb language sql security invoker set search_path = ''
-as $$ select deriro_private.outbox_worker('finish',jsonb_build_object('id',p_id,'token',p_token,'status',p_status,'error',p_error)) $$;
+as $$ select deriro_private.outbox_worker('finish',jsonb_build_object('id',p_id,'token',p_token,'status',p_status,'error',p_error,
+  'delivered',to_jsonb(p_delivered_subscription_ids))) $$;
 
 create function public.svc_release_outbox(p_id bigint,p_token uuid)
 returns jsonb language sql security invoker set search_path = ''
@@ -774,7 +724,7 @@ revoke execute on function
   deriro_private.outbox_worker(text,jsonb),
   deriro_private.maintenance(text),
   public.svc_claim_outbox(int,int),
-  public.svc_finish_outbox(bigint,uuid,public.outbox_status,text),
+  public.svc_finish_outbox(bigint,uuid,public.outbox_status,text,uuid[]),
   public.svc_release_outbox(bigint,uuid),
   public.svc_outbox_still_valid(bigint,uuid),
   public.svc_prune_push_subscription(uuid,text),
@@ -785,7 +735,7 @@ grant execute on function
   deriro_private.outbox_worker(text,jsonb),
   deriro_private.maintenance(text),
   public.svc_claim_outbox(int,int),
-  public.svc_finish_outbox(bigint,uuid,public.outbox_status,text),
+  public.svc_finish_outbox(bigint,uuid,public.outbox_status,text,uuid[]),
   public.svc_release_outbox(bigint,uuid),
   public.svc_outbox_still_valid(bigint,uuid),
   public.svc_prune_push_subscription(uuid,text),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { body, rpc, verifyUser } from "./http.ts";
 import { deliver, handleDispatch } from "./dispatch.ts";
 import { DryRunSmsProvider, TwilioSmsProvider, validPushEndpoint } from "./providers.ts";
+import type { Delivery, PushSubscription } from "./providers.ts";
 import { pushPayload, smsText } from "./templates.ts";
 
 const secret = "fixture-dispatch-secret-32-characters";
@@ -110,6 +111,61 @@ Deno.test("DryRun SMS returns simulation and worker never counts it as sent", as
     const outcome = await deliver({ id: 1, claim_token: id, channel: "sms", template: "esc_sms_open" });
     assert.deepEqual(outcome, { status: "skipped", error: "dry_run" });
   });
+});
+
+Deno.test("push retry targets only subscriptions that have not accepted the job", async () => {
+  const first = { id: "sub-accepted", endpoint: "https://fcm.googleapis.com/fcm/send/a", keys: { p256dh: "k", auth: "a" } };
+  const second = { id: "sub-retry", endpoint: "https://fcm.googleapis.com/fcm/send/b", keys: { p256dh: "k", auth: "a" } };
+  const job = { id: 7, claim_token: id, channel: "push" as const, template: "child_request_new" };
+  const service = { SUPABASE_URL: "https://supabase.test", SUPABASE_SECRET_KEY: "service-fixture" };
+  let context: unknown;
+  const fakeRpc: typeof fetch = (url) => {
+    assert.ok(String(url).endsWith("svc_outbox_still_valid"));
+    return Promise.resolve(ok(context));
+  };
+  const sent: string[] = [];
+  await withFixtures(service, fakeRpc, async () => {
+    context = { valid: true, pickup_id: id, payload: { rider_name: "민준" }, subscriptions: [first, second], delivered_count: 0 };
+    const partial = await deliver(job, (subscription: PushSubscription): Promise<Delivery> => {
+      sent.push(subscription.id);
+      return Promise.resolve(subscription.id === first.id
+        ? { ok: true, providerId: "web_push" }
+        : { ok: false, error: "push_http_503", retryable: true });
+    });
+    assert.deepEqual(partial, { status: "pending", error: "partial_push", delivered: [first.id] });
+
+    context = { valid: true, pickup_id: id, payload: { rider_name: "민준" }, subscriptions: [second], delivered_count: 1 };
+    const retried = await deliver(job, (subscription: PushSubscription): Promise<Delivery> => {
+      sent.push(subscription.id);
+      return Promise.resolve({ ok: true, providerId: "web_push" });
+    });
+    assert.deepEqual(retried, { status: "sent", delivered: [second.id] });
+
+    context = { valid: true, pickup_id: id, payload: {}, subscriptions: [], delivered_count: 2 };
+    assert.deepEqual(await deliver(job, (): Promise<Delivery> => Promise.reject(new Error("no send expected"))), { status: "sent", delivered: [] });
+  });
+  assert.deepEqual(sent, [first.id, second.id, second.id]);
+});
+
+Deno.test("dispatch reports accepted subscriptions when it finishes a job", async () => {
+  const subscription = { id: "sub-1", endpoint: "https://fcm.googleapis.com/fcm/send/a", keys: { p256dh: "k", auth: "a" } };
+  let finish: Record<string, unknown> | undefined;
+  await withFixtures({ DISPATCH_SECRET: secret, SUPABASE_URL: "https://supabase.test", SUPABASE_SECRET_KEY: "service-fixture" },
+    (url, init) => {
+      const route = String(url).split("/").pop()!;
+      if (route === "svc_claim_outbox") return Promise.resolve(ok({ jobs: [{ id: 3, claim_token: id, channel: "push", template: "test_push" }] }));
+      if (route === "svc_outbox_still_valid") return Promise.resolve(ok({ valid: true, payload: {}, subscriptions: [subscription], delivered_count: 0 }));
+      assert.equal(route, "svc_finish_outbox");
+      finish = JSON.parse(String(init?.body));
+      return Promise.resolve(ok({ updated: true }));
+    }, async () => {
+      const response = await handleDispatch(new Request("https://edge.test", {
+        method: "POST", headers: { "x-dispatch-secret": secret },
+      }), (): Promise<Delivery> => Promise.resolve({ ok: true, providerId: "web_push" }));
+      assert.equal((await response.json()).data.sent, 1);
+    });
+  assert.equal(finish?.p_status, "sent");
+  assert.deepEqual(finish?.p_delivered_subscription_ids, [subscription.id]);
 });
 
 Deno.test("Twilio adapter maps transient errors and sends to fixed provider origin", async () => {

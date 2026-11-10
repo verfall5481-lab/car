@@ -139,7 +139,7 @@ export function guardianState(overview: Overview, today?: Today, detail?: Pickup
   const base = baseState();
   return { ...base, advance: today?.server_time ? Date.parse(today.server_time) - receivedAt : 0, terminalAt: terminalTimes(rows), departureAt: Object.fromEntries(rows.flatMap((row) => row.en_route_at ? [[row.id, Date.parse(row.en_route_at)]] : [])), smsFailures: today?.notification_failures?.sms_failed,
     familyName: overview.family.name, members: overview.members.map((row) => mapMember(row, familyId)),
-    riders: overview.riders.map((row) => ({ id: row.id, familyId, name: row.display_name, kind: row.kind, connected: Boolean(row.device_count || row.devices?.some((item) => !item.revoked_at) || overview.devices.some((item) => item.rider_id === row.id && !item.revoked_at)), archivedAt: date(row.archived_at) })),
+    riders: overview.riders.map((row) => ({ id: row.id, familyId, name: row.display_name, kind: row.kind, phone: row.phone_e164 ?? undefined, connected: Boolean(row.device_count || row.devices?.some((item) => !item.revoked_at) || overview.devices.some((item) => item.rider_id === row.id && !item.revoked_at)), archivedAt: date(row.archived_at) })),
     places: toPlaces(overview.places, familyId), points: toPoints(overview.pickup_points, familyId), vehicles, vehicle: vehicles[0] ?? base.vehicle,
     routines: overview.routines.map((row) => ({ id: row.id, requester: row.rider_member_id ? { kind: 'member', id: row.rider_member_id } : { kind: 'rider', id: row.rider_id ?? '' },
       placeId: row.place_id, time: row.time_local.slice(0, 5), days: Array.from({ length: 7 }, (_, index) => index).filter((index) => (row.weekdays & (1 << index)) !== 0),

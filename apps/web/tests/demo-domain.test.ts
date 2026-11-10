@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Actor, PickupAction } from '@deriro/contracts';
-import { applyDemoAction, createRequest, demoStart, exampleGps, freshDemo, minute, routineOccurrence, setDemoTime } from '../src/demo-domain.ts';
+import { applyDemoAction, createRequest, demoStart, exampleGps, freshDemo, minute, pairVehicle, renewPairCode, routineOccurrence, setDemoTime, setVehicleDriver, unpairVehicle, vehiclePaired } from '../src/demo-domain.ts';
 import type { Change, DemoState } from '../src/demo-domain.ts';
 
 const rider = { kind: 'rider', id: 'minjun' } as const;
@@ -69,4 +69,44 @@ test('ready early updates a routine occurrence without accepting or creating a r
   assert.equal(ready.pickups.length, 1);
   assert.equal(ready.pickups[0].readyAt, now);
   assert.equal(ready.pickups[0].acceptedAt, null);
+});
+
+test('unpairing keeps the assignee but frees the car, and only the code on the car pairs it again (F-05)', () => {
+  let state = act(request(), dad, { type: 'accept', vehicleId: car.id });
+  state = ok(unpairVehicle(state, now));
+  assert.equal(vehiclePaired(state.vehicle), false);
+  assert.equal(state.pickups[0].assigneeId, dad.id);
+  assert.equal(state.pickups[0].vehicleId, null);
+  assert.equal(state.vehicle.currentDriverId, null);
+  assert.equal(state.routines.find((routine) => routine.id === 'math')?.vehicleId, '');
+  const code = state.vehicle.pairing!.code;
+  assert.match(code, /^[A-HJKMNP-Z2-9]{6}$/);
+  const failed = applyDemoAction(state, 'pickup', car, { type: 'vehicle_start', expectedVersion: state.pickups[0].version, sessionId: 's', actionId: 'a' }, now);
+  assert.equal(failed.ok ? '' : failed.code, 'FORBIDDEN');
+  const wrong = pairVehicle(state, code === 'AAAAAA' ? 'BBBBBB' : 'AAAAAA', '우리 차', 'mom', now);
+  assert.equal(wrong.ok ? '' : wrong.code, 'CODE_INVALID');
+  const late = pairVehicle(state, code, '우리 차', 'mom', now + 10 * minute);
+  assert.equal(late.ok ? '' : late.code, 'CODE_EXPIRED');
+  const notDriver = pairVehicle(state, code, '우리 차', 'aunt', now);
+  assert.equal(notDriver.ok ? '' : notDriver.code, 'VALIDATION');
+  state = ok(pairVehicle(state, `${code.slice(0, 3)}-${code.slice(3).toLowerCase()}`, ' 엄마 차 ', 'mom', now));
+  assert.equal(vehiclePaired(state.vehicle), true);
+  assert.equal(state.vehicle.name, '엄마 차');
+  assert.equal(state.vehicle.currentDriverId, 'mom');
+  assert.equal(state.vehicle.pairing, null);
+  const again = pairVehicle(state, code, '우리 차', 'mom', now);
+  assert.equal(again.ok ? '' : again.code, 'ALREADY_PAIRED');
+  assert.equal(renewPairCode(state, now).ok, false);
+});
+
+test('driver changes only to an eligible member and never mid-trip (V-09)', () => {
+  let state = freshDemo();
+  const aunt = setVehicleDriver(state, 'aunt');
+  assert.equal(aunt.ok ? '' : aunt.code, 'NOT_FOUND');
+  state = ok(setVehicleDriver(state, 'mom'));
+  assert.equal(state.vehicle.currentDriverId, 'mom');
+  state = act(request(state), mom, { type: 'accept', vehicleId: car.id });
+  state = act(state, { ...car, driverId: 'mom' }, { type: 'vehicle_start', expectedVersion: state.pickups[0].version, sessionId: 's', actionId: 'a' });
+  const busy = setVehicleDriver(state, 'dad');
+  assert.equal(busy.ok ? '' : busy.code, 'VEHICLE_BUSY');
 });

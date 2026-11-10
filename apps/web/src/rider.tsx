@@ -213,7 +213,7 @@ export function RiderRequest({ state, requester, back }: { state: DemoState; req
         <fieldset><legend>{copy.when}</legend><div className="chips time-chips">{[0, 10, 20, 30].map((item) => <button type="button" key={item} className="chip" aria-pressed={delay === item} onClick={() => setDelay(item)}>{item ? copy.minutesLater(item) : copy.dateNow}</button>)}</div></fieldset>
         <div className="rider-cta">
           <button type="button" className="request-button" disabled={!location || submitting || operations?.pending} onClick={() => { if (location) { setPending({ requester, location, delay }); setCountdown(3); } }}>
-            {submitting ? copy.loading : location ? copy.request : copy.selectFirst}
+            {submitting ? copy.loading : location ? copy.request : placeMode === 'saved' && placeId && points.length ? copy.selectPoint : copy.selectFirst}
           </button>
         </div>
       </section>}

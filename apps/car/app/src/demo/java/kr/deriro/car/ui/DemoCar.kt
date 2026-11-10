@@ -66,7 +66,7 @@ internal fun DemoCar(model: DemoCarViewModel) {
                 Header(state, model)
                 val body = if (parked) Modifier.verticalScroll(rememberScrollState()) else Modifier
                 Column(body.fillMaxWidth().weight(1f).padding(bottom = margin)) {
-                    VehicleContent(compact) {
+                    VehicleContent {
                         when {
                             !state.paired -> Pairing(state, model, wide)
                             panel == Panel.LOCATION -> ConfirmLocation(state, model, wide)
@@ -91,13 +91,13 @@ private fun Header(state: DemoCarState, model: DemoCarViewModel) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(CarCopy.appName, style = MaterialTheme.typography.titleLarge, color = Ink)
-        Text(CarCopy.demo, style = MaterialTheme.typography.bodyMedium, color = Amber)
+        Text(DemoCopy.demo, style = MaterialTheme.typography.bodyMedium, color = Amber)
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            Info(CarCopy.mode(state.mode), maxLines = 1)
+            Info(DemoCopy.mode(state.mode), maxLines = 1)
         }
         if (state.mode.allowsParkedControls) {
             if (!state.paired) {
-                CarButton(CarCopy.drivingPreview, primary = false) { model.simulateMode(DrivingMode.DRIVING) }
+                CarButton(DemoCopy.drivingPreview, primary = false) { model.simulateMode(DrivingMode.DRIVING) }
             } else if (state.panel == Panel.HOME) {
                 CarButton(CarCopy.settings, primary = false) { model.open(Panel.SETTINGS) }
             }
@@ -122,21 +122,21 @@ private fun Pairing(state: DemoCarState, model: DemoCarViewModel, wide: Boolean)
     val active = now.isBefore(ticket.expiresAt)
     Split(wide, first = {
         Heading(CarCopy.pairTitle)
-        Body(CarCopy.pairDemo)
-        Body(CarCopy.localOnly)
+        Body(DemoCopy.pairDemo)
+        Body(DemoCopy.localOnly)
         Rule()
         Title(CarCopy.pairingCode(ticket.code))
     }, second = {
         if (active) {
-            CarQr("deriro-demo:pair/${ticket.code}", CarCopy.qrDemo)
-            Info(CarCopy.qrDemo)
+            CarQr("deriro-demo:pair/${ticket.code}", DemoCopy.qrDemo)
+            Info(DemoCopy.qrDemo)
             Info(CarCopy.expires(now, ticket.expiresAt))
         } else {
             Info(CarCopy.expired, color = Error)
         }
     })
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        CarButton(CarCopy.pairLocally, Modifier.weight(1f), enabled = active, onClick = model::pairLocally)
+    ButtonRow {
+        CarButton(DemoCopy.pairLocally, Modifier.weight(1f), enabled = active, onClick = model::pairLocally)
         CarButton(CarCopy.renew, Modifier.weight(1f), primary = !active, onClick = model::renewPairCode)
     }
 }
@@ -149,8 +149,8 @@ private fun Home(state: DemoCarState, model: DemoCarViewModel, wide: Boolean) {
         PickupPhase.REQUESTED -> Request(pickup, state, model)
         PickupPhase.EN_ROUTE -> EnRoute(pickup, state, model)
         PickupPhase.ARRIVED -> {
-            val detail = if (state.callbackOutcome == CallbackOutcome.APPLIED) CarCopy.arrivedByCallback(pickup.rider)
-                else CarCopy.arrivalRecorded
+            val detail = if (state.callbackOutcome == CallbackOutcome.APPLIED) DemoCopy.arrivedByCallback(pickup.rider)
+                else DemoCopy.arrivalRecorded
             Split(wide && parked, first = {
                 Heading(CarCopy.arrived)
                 Info(detail, maxLines = 1)
@@ -170,23 +170,23 @@ private fun Home(state: DemoCarState, model: DemoCarViewModel, wide: Boolean) {
                     Info(CarCopy.next)
                     Heading("${pickup.timeLabel}  ${pickup.rider}", maxLines = 1)
                     Body(pickup.location.label, maxLines = 1)
-                    if (parked) Info(CarCopy.assigned)
+                    if (parked) Info(DemoCopy.assigned)
                 } else {
                     Heading(CarCopy.noPickups)
-                    if (state.dismissedRequestId != null) Info(CarCopy.declined)
+                    if (state.dismissedRequestId != null) Info(DemoCopy.declined)
                 }
             }, second = {
                 if (parked) {
                     Title(CarCopy.carName)
                     Rule()
-                    Body(CarCopy.energy(state.vehicle))
-                    Info(CarCopy.driver)
-                    Info(CarCopy.paired, color = Confirmed)
+                    Body(DemoCopy.energy(state.vehicle))
+                    Info(DemoCopy.driver(state.driver))
+                    Info(DemoCopy.paired, color = Confirmed)
                 }
                 val short = state.vehicle?.rangeKm?.let { it < DemoCarViewModel.REQUIRED_RANGE_KM } == true
                 if (short) Info(CarCopy.rangeShort, color = Amber, maxLines = 1)
             })
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ButtonRow {
                 if (pickup?.phase == PickupPhase.ASSIGNED) {
                     if (pickup.location.confirmed) {
                         CarButton(CarCopy.depart, Modifier.weight(1f), onClick = model::depart)
@@ -213,9 +213,9 @@ private fun Request(pickup: Pickup, state: DemoCarState, model: DemoCarViewModel
         Info(if (parked) CarCopy.locationUnconfirmed else CarCopy.parkToConfirm, maxLines = 1)
     } else if (parked) {
         val distance = pickup.roundTripKm?.let(CarCopy::roundTrip)
-        Info(listOfNotNull(distance, CarCopy.energy(state.vehicle)).joinToString(", "), maxLines = 1)
+        Info(listOfNotNull(distance, DemoCopy.energy(state.vehicle)).joinToString(", "), maxLines = 1)
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    ButtonRow {
         when {
             pickup.location.confirmed -> CarButton(CarCopy.depart, Modifier.weight(1f), onClick = model::depart)
             parked -> CarButton(CarCopy.location, Modifier.weight(1f)) { model.open(Panel.LOCATION) }
@@ -231,11 +231,11 @@ private fun ConfirmLocation(state: DemoCarState, model: DemoCarViewModel, wide: 
     Split(wide, divider = false, first = { LocationDiagram() }, second = {
         Heading(CarCopy.locationTitle(pickup.rider))
         Body(pickup.location.label)
-        Info(CarCopy.accuracy)
+        Info(DemoCopy.accuracy)
         Rule()
-        CarButton(CarCopy.nearSavedPlace, primary = false) { model.confirmLocation(useSavedPlace = true) }
+        CarButton(DemoCopy.nearSavedPlace, primary = false) { model.confirmLocation(useSavedPlace = true) }
     })
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    ButtonRow {
         CarButton(CarCopy.routeHere, Modifier.weight(1f)) { model.confirmLocation(useSavedPlace = false) }
         CarButton(CarCopy.back, Modifier.weight(1f), primary = false) { model.open(Panel.HOME) }
     }
@@ -260,7 +260,7 @@ private fun LocationDiagram() {
             drawCircle(Amber, 6.dp.toPx())
         }
         Text(
-            CarCopy.mapDemo, Modifier.background(Charcoal).padding(horizontal = 8.dp, vertical = 4.dp),
+            DemoCopy.mapDemo, Modifier.background(Charcoal).padding(horizontal = 8.dp, vertical = 4.dp),
             style = MaterialTheme.typography.bodyMedium, color = Ink,
         )
     }
@@ -271,17 +271,17 @@ private fun EnRoute(pickup: Pickup, state: DemoCarState, model: DemoCarViewModel
     Heading(CarCopy.enRouteTitle(pickup.rider), maxLines = 1)
     Body(pickup.location.label, maxLines = 1)
     when (pickup.route?.guidance) {
-        Guidance.STARTING -> Info(CarCopy.routeStarting, maxLines = 1)
+        Guidance.STARTING -> Info(DemoCopy.routeStarting, maxLines = 1)
         Guidance.FAILED -> {
             Info(CarCopy.routeFailed, color = Error, maxLines = 1)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ButtonRow {
                 CarButton(CarCopy.retry, Modifier.weight(1f), onClick = model::depart)
                 CarButton(CarCopy.continueManually, Modifier.weight(1f), primary = false, onClick = model::continueWithoutNavigation)
             }
         }
         else -> {
-            if (state.mode.allowsParkedControls && pickup.route?.guidance == Guidance.REQUESTED) Info(CarCopy.routeRequested)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (state.mode.allowsParkedControls && pickup.route?.guidance == Guidance.REQUESTED) Info(DemoCopy.routeRequested)
+            ButtonRow {
                 CarButton(CarCopy.arrived, Modifier.weight(1f), onClick = model::arrive)
                 CarButton(CarCopy.reopen, Modifier.weight(1f), primary = false, onClick = model::depart)
             }

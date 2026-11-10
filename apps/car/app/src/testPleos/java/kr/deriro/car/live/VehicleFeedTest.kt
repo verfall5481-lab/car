@@ -79,6 +79,26 @@ class VehicleFeedTest {
     }
 
     @Test
+    fun alertKeyIgnoresVersionAndDrivingCardsKeepAtMostTwoSafeActions() {
+        val row = json("pickup_id" to "p", "kind" to "child_request", "version" to 1, "status" to "open",
+            "location_confirmed" to false, "primary_action" to "start_now", "secondary_action" to "decline")
+        val first = VehicleFeed.from(json("vehicle" to json("id" to "v"), "cards" to JSONArray().put(row))).cards.single()
+        val bumped = VehicleFeed.from(json("vehicle" to json("id" to "v"),
+            "cards" to JSONArray().put(JSONObject(row.toString()).put("version", 2)))).cards.single()
+        assertEquals(first.alertKey, bumped.alertKey)
+        assertTrue(first.key != bumped.key)
+
+        // Unconfirmed location: parked confirms it first, driving may only accept (V-03).
+        assertEquals(listOf("location", "decline"), first.actions(parked = true, activeTripPickupId = null))
+        assertEquals(listOf("accept", "decline"), first.actions(parked = false, activeTripPickupId = null))
+        val boarding = first.copy(kind = "boarding_check", primary = "boarded", secondary = "ack")
+        assertEquals(listOf("ack"), boarding.actions(parked = false, activeTripPickupId = null))
+        val cancelled = first.copy(kind = "cancelled_urgent", primary = null, secondary = null)
+        assertEquals(listOf("dismiss"), cancelled.actions(parked = false, activeTripPickupId = null))
+        assertTrue("cancelled_urgent" in HEADS_UP_CARD_KINDS && "offer_to_me" in HEADS_UP_CARD_KINDS)
+    }
+
+    @Test
     fun reportsProviderFailuresAndDistinguishesMapFallbackFromGuidance() {
         val destination = Destination(LatLng(37.5, 127.0), "후문", "pickup", "session", 1)
         val mapped = NavResult.MapOpened("NAVI_TIMEOUT").reportArguments(destination)

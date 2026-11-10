@@ -24,10 +24,12 @@ internal enum class CallbackOutcome { IGNORED, APPLIED }
 internal data class PairCode(val code: String, val expiresAt: Instant) {
     companion object {
         fun generate(): PairCode {
-            val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-            val code = List(6) { alphabet.random() }.joinToString("").chunked(3).joinToString("-")
+            // F-05: no confusable 0/O, 1/I/L.
+            val code = List(6) { ALPHABET.random() }.joinToString("").chunked(3).joinToString("-")
             return PairCode(code, Instant.now().plusSeconds(600))
         }
+
+        const val ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
     }
 }
 
@@ -42,7 +44,10 @@ internal data class DemoCarState(
     val previousDestination: Destination? = null,
     val callbackOutcome: CallbackOutcome? = null,
     val failNextRoute: Boolean = false,
+    val driver: String = DemoFixtures.assignee,
 )
+
+internal fun canChangeDriver(state: DemoCarState) = state.pickup?.phase !in setOf(PickupPhase.EN_ROUTE, PickupPhase.ARRIVED)
 
 internal class DemoCarViewModel : ViewModel() {
     private val vehicle = DemoVehicleStateSource()
@@ -94,6 +99,13 @@ internal class DemoCarViewModel : ViewModel() {
             if (pickup.id == now.dismissedRequestId || pickup.location.confirmed || pickup.phase !in unstarted) return
         }
         current.update { it.copy(panel = panel) }
+    }
+
+    /** V-09: who is driving is a parked-only choice and stays fixed while a trip is being guided. */
+    fun chooseDriver(name: String) {
+        val now = current.value
+        if (!driving.mode.value.allowsParkedControls || !now.paired || name !in DemoFixtures.drivers || !canChangeDriver(now)) return
+        current.update { it.copy(driver = name) }
     }
 
     fun unpair() {

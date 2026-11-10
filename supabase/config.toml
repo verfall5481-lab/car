@@ -42,6 +42,3 @@ port = 54324
 
 [functions.dispatch-notifications]
 verify_jwt = false
-
-[functions.geo-reverse]
-verify_jwt = false

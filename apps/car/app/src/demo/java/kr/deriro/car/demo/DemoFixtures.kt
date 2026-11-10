@@ -7,6 +7,9 @@ import kr.deriro.car.domain.PickupLocation
 import kr.deriro.car.domain.PickupPhase
 
 internal object DemoFixtures {
+    const val assignee = "아빠"
+    val drivers = listOf("엄마", "아빠")
+
     val academy = PickupLocation(
         place = "수학학원",
         coordinates = LatLng(37.49979, 127.03561),

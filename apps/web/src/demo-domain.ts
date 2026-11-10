@@ -6,7 +6,10 @@ export type Rider = { id: string; familyId: string; name: string; phone?: string
 export type DemoPlace = Place & { kind: string };
 export type Routine = { id: string; requester: Requester; placeId: string; days: number[]; time: string; assigneeId: string; vehicleId: string; before: number; enabled: boolean };
 export type History = { pickupId: string; at: number; event: PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined'; actor: string; detail?: string };
-export type DemoVehicle = Vehicle & { name: string; range: number | null; rangeCollectedAt?: number | null; rangeStale?: boolean; isDemoValue?: boolean; parked: boolean; online: boolean; navFails: boolean; navError: boolean };
+export type PairCode = { code: string; expiresAt: number };
+export type DemoVehicle = Vehicle & { name: string; range: number | null; rangeCollectedAt?: number | null; rangeStale?: boolean; isDemoValue?: boolean; parked: boolean; online: boolean; navFails: boolean; navError: boolean;
+  /** F-05: set while the car is not connected to a family; the car shows V-01 and receives no cards. */
+  revokedAt?: number | null; pairing?: PairCode | null };
 export type DemoState = {
   schema: 1; startedAt: number; advance: number; familyName: string; live?: boolean; vehicles?: DemoVehicle[]; terminalAt?: Record<string, number>; departureAt?: Record<string, number>;
   pickupCapabilities?: Record<string, { cancel?: boolean; notMet?: boolean; ready?: boolean; escalation?: number; coordinates?: boolean }>;
@@ -115,6 +118,56 @@ function makePickup(id: string, requester: Requester, destination: Destination, 
 const fail = (state: DemoState, code: string): Change => ({ ok: false, code, state });
 export const changed = (state: DemoState): Change => ({ ok: true, state });
 
+// F-05: 6 characters without the confusable 0/O, 1/I/L; valid for 10 minutes.
+const pairAlphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export const pairCodeLength = 6;
+export const normalizePairCode = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, pairCodeLength);
+export const formatPairCode = (code: string) => code.length > 3 ? `${code.slice(0, 3)}-${code.slice(3)}` : code;
+export const vehiclePaired = (vehicle: DemoVehicle) => vehicle.revokedAt == null;
+export function newPairCode(now: number): PairCode {
+  const code = Array.from(crypto.getRandomValues(new Uint8Array(pairCodeLength)), (value) => pairAlphabet[value % pairAlphabet.length]).join('');
+  return { code, expiresAt: now + 10 * minute };
+}
+const driverAllowed = (state: DemoState, memberId: string) => state.members.some((person) => person.id === memberId && person.canDrive && person.leftAt == null);
+
+/** Mirrors `revoke_vehicle`: active pickups keep their assignee but lose the car, and routines drop it as default. */
+export function unpairVehicle(state: DemoState, now: number): Change {
+  const { vehicle } = state;
+  if (!vehiclePaired(vehicle)) return changed(state);
+  const active = new Set(['assigned', 'en_route', 'arrived']);
+  return changed({
+    ...state,
+    vehicle: { ...vehicle, revokedAt: now, pairing: newPairCode(now), currentDriverId: null, activePickupId: null, activeSessionId: null, activeDestinationRevision: null, navError: false, range: null, rangeCollectedAt: null },
+    pickups: state.pickups.map((pickup) => pickup.vehicleId === vehicle.id && active.has(pickup.status) ? { ...pickup, vehicleId: null, navigation: null } : pickup),
+    routines: state.routines.map((routine) => routine.vehicleId === vehicle.id ? { ...routine, vehicleId: '' } : routine),
+  });
+}
+
+export function renewPairCode(state: DemoState, now: number): Change {
+  if (vehiclePaired(state.vehicle)) return fail(state, 'ALREADY_PAIRED');
+  if (!state.vehicle.parked) return fail(state, 'FORBIDDEN');
+  return changed({ ...state, vehicle: { ...state.vehicle, pairing: newPairCode(now) } });
+}
+
+/** Mirrors `vehicle_pair_confirm`: the guardian checks the code shown on the car, names it and picks who drives. */
+export function pairVehicle(state: DemoState, code: string, name: string, driverId: string, now: number): Change {
+  const { vehicle } = state;
+  if (vehiclePaired(vehicle)) return fail(state, 'ALREADY_PAIRED');
+  if (!vehicle.pairing || vehicle.pairing.code !== normalizePairCode(code)) return fail(state, 'CODE_INVALID');
+  if (vehicle.pairing.expiresAt <= now) return fail(state, 'CODE_EXPIRED');
+  const nickname = name.trim();
+  if (!nickname || nickname.length > 20 || !driverAllowed(state, driverId)) return fail(state, 'VALIDATION');
+  return changed({ ...state, vehicle: { ...vehicle, revokedAt: null, pairing: null, name: nickname, currentDriverId: driverId, range: 48, rangeCollectedAt: now, isDemoValue: true } });
+}
+
+/** Mirrors `vehicle_set_driver`; the demo also keeps the driver while a trip is being guided, as P-15 does. */
+export function setVehicleDriver(state: DemoState, driverId: string): Change {
+  if (!vehiclePaired(state.vehicle)) return fail(state, 'FORBIDDEN');
+  if (state.vehicle.activePickupId) return fail(state, 'VEHICLE_BUSY');
+  if (!driverAllowed(state, driverId)) return fail(state, 'NOT_FOUND');
+  return changed({ ...state, vehicle: { ...state.vehicle, currentDriverId: driverId } });
+}
+
 export function createRequest(state: DemoState, requester: Requester, location: LocationInput, minutes: number, now: number, id: string): Change {
   if (!canRequestPickup(requester, familyId, state.members, state.riders)) return fail(state, 'FORBIDDEN');
   if (!requestRecipients({ familyId, requester }, state.members, [state.vehicle]).memberIds.length) return fail(state, 'NO_DRIVER');
@@ -139,6 +192,7 @@ export type ActionOptions = { confirmedSwitch?: boolean; detail?: string };
 export function applyDemoAction(state: DemoState, pickupId: string, actor: Actor, action: PickupAction, now: number, options: ActionOptions = {}): Change {
   const pickup = state.pickups.find(({ id }) => id === pickupId);
   if (!pickup) return fail(state, 'NOT_FOUND');
+  if (actor.kind === 'vehicle' && (!vehiclePaired(state.vehicle) || actor.id !== state.vehicle.id)) return fail(state, 'FORBIDDEN');
   if (actor.kind === 'vehicle' && !state.vehicle.online) return fail(state, 'OFFLINE');
   if (action.type === 'vehicle_start' && state.vehicle.activePickupId && state.vehicle.activePickupId !== pickup.id && !options.confirmedSwitch) return fail(state, 'VEHICLE_BUSY');
   const result = applyPickupAction(pickup, actor, action, { now, members: state.members, vehicles: [state.vehicle] });

@@ -107,6 +107,8 @@
 }
 
 .vehicle-main .vehicle-kicker { font-weight: 670; }
+.vehicle-main .vehicle-note { color: var(--vehicle-ink); font-weight: 650; }
+.vehicle-main .vehicle-more { font-weight: 650; }
 .vehicle-main > .vehicle-actions { margin-top: clamp(6px, 1.1vw, 15px); }
 .vehicle-empty > svg { width: clamp(26px, 5vw, 56px); height: auto; color: var(--vehicle-muted); }
 .vehicle-empty h2 { max-width: 10em; }
@@ -264,6 +266,32 @@
 .vehicle-nearby { display: grid; gap: 6px; border-top: 1px solid var(--vehicle-line); padding-top: 8px; }
 .vehicle-nearby h3 { color: var(--vehicle-muted); font-size: clamp(0.8rem, 1.6vw, 1.1rem); }
 .vehicle-nearby .button { justify-content: flex-start; min-height: 44px; }
+
+/* V-01 pairing and V-09 settings */
+.vehicle-pair { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: clamp(14px, 3vw, 36px); align-items: center; }
+.vehicle-steps { list-style: none; display: grid; gap: clamp(6px, 1vw, 12px); margin: clamp(4px, 1vw, 12px) 0; padding: 0; color: var(--vehicle-muted); font-size: clamp(0.9rem, 1.9vw, 1.45rem); counter-reset: vehicle-step; }
+.vehicle-steps li { display: flex; align-items: center; gap: 10px; counter-increment: vehicle-step; }
+.vehicle-steps li::before { content: counter(vehicle-step); display: grid; place-items: center; flex: none; width: 1.6em; height: 1.6em; border-radius: 50%; background: #383e45; color: var(--vehicle-ink); font-size: 0.85em; font-weight: 750; }
+.vehicle-main .vehicle-pair-code { display: flex; align-items: baseline; gap: 14px; margin-top: 6px; color: var(--vehicle-muted); }
+.vehicle-pair-code strong { color: var(--vehicle-ink); font-size: clamp(1.6rem, 4.4vw, 3.4rem); font-weight: 820; letter-spacing: 0.06em; font-variant-numeric: tabular-nums; }
+.vehicle-pair-qr { display: grid; justify-items: center; gap: 8px; color: var(--vehicle-muted); font-size: clamp(0.8rem, 1.5vw, 1.1rem); }
+.vehicle-pair-qr > span { display: flex; align-items: center; gap: 6px; color: var(--vehicle-amber); font-weight: 680; font-variant-numeric: tabular-nums; }
+.vehicle-qr { display: grid; justify-items: center; gap: 4px; margin: 0; }
+.vehicle-qr img,
+.vehicle-qr-blank { display: block; width: clamp(96px, 16vw, 168px); height: auto; aspect-ratio: 1; border-radius: 10px; background: #fff; }
+.vehicle-qr figcaption { font-size: 0.85em; }
+.vehicle-settings-link { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--vehicle-muted); font: inherit; font-weight: 650; cursor: pointer; }
+.vehicle-settings-link:hover { color: var(--vehicle-ink); }
+.vehicle-settings-link svg { width: 1.12em; height: 1.12em; }
+.vehicle-settings { gap: clamp(8px, 1.4vw, 16px); align-content: start; }
+.vehicle-drivers { display: flex; flex-wrap: wrap; gap: clamp(6px, 1vw, 12px); }
+.vehicle-drivers .button { flex: 1 1 0; min-width: 5em; min-height: clamp(44px, 5.6vw, 72px); font-size: clamp(0.95rem, 2vw, 1.5rem); font-weight: 760; border-radius: clamp(10px, 1.2vw, 14px); }
+.vehicle-hint { color: var(--vehicle-muted); }
+.vehicle-facts { display: grid; margin: 0; border-top: 1px solid var(--vehicle-line); }
+.vehicle-facts > div { display: flex; justify-content: space-between; gap: 12px; padding: clamp(8px, 1.2vw, 14px) 0; border-bottom: 1px solid var(--vehicle-line); font-size: clamp(0.9rem, 1.9vw, 1.4rem); }
+.vehicle-facts dt { color: var(--vehicle-muted); }
+.vehicle-facts dd { margin: 0; font-weight: 700; }
+.vehicle-screen .button--secondary.vehicle-danger { color: var(--vehicle-red); }
 
 @media (max-width: 560px) {
   .vehicle-layout { width: calc(100% - 16px); }

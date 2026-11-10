@@ -26,3 +26,51 @@ jobs:
       - run: pnpm build
       - run: pnpm --filter @deriro/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
+
+  edge-functions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.5.6
+      - run: >-
+          deno check --node-modules-dir=none --frozen --lock=supabase/functions/deno.lock
+          supabase/functions/dispatch-notifications/index.ts
+          supabase/functions/send-rider-invite/index.ts
+          supabase/functions/delete-account/index.ts
+          supabase/functions/_shared/edge.test.ts
+      - run: deno test --node-modules-dir=none --frozen --lock=supabase/functions/deno.lock --allow-env supabase/functions/_shared/edge.test.ts
+
+  sql-concurrency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.5
+        env:
+          POSTGRES_USER: deriro_test
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U deriro_test -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.19.0
+      # The runner image ships the PostgreSQL client. The test creates and drops its own database.
+      - run: node packages/contracts/test-db/concurrency.mjs
+        env:
+          DERIRO_TEST_PGPORT: "55432"
+          DERIRO_TEST_PGUSER: deriro_test

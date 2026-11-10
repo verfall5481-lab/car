@@ -33,6 +33,8 @@ const errorCopy: Record<string, string> = {
   FORBIDDEN: copy.restricted, NOT_ASSIGNEE: copy.restricted, ACTIVE_REQUEST: copy.activeRequest,
   VEHICLE_BUSY: copy.busyVehicle, LOCATION_UNCONFIRMED: copy.locationNotConfirmed,
   OFFLINE: copy.carOfflineError, NO_DRIVER: copy.noDriver, ROUTINE_ALREADY: copy.routineAlready,
+  CODE_INVALID: copy.pairWrongCode, CODE_EXPIRED: copy.pairCodeExpired, ALREADY_PAIRED: copy.carAlreadyPairedHint,
+  VALIDATION: copy.invalidInput, NOT_FOUND: copy.missing,
 };
 
 export function useCommit() {

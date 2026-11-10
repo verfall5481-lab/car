@@ -1,16 +1,22 @@
 import { error, json, method, rpc, validDispatchSecret } from "./http.ts";
 import { approximateRegion, sendPush, smsProvider } from "./providers.ts";
 import type { PushSubscription } from "./providers.ts";
+import { summarizePush } from "./push_outcome.ts";
+import type { PushOutcome } from "./push_outcome.ts";
 import { pushPayload, smsText } from "./templates.ts";
 import type { TemplateData } from "./templates.ts";
 
 export type Job = { id: number; claim_token: string; channel: "push" | "sms" | "geo"; template: string };
 type Context = {
-  valid: boolean; demo?: boolean; payload?: TemplateData; pickup_id?: string; phone_e164?: string; subscriptions?: PushSubscription[];
+  valid: boolean; demo?: boolean; payload?: TemplateData; pickup_id?: string; phone_e164?: string;
+  // Push only: subscriptions that have not accepted this job yet, and how many already have.
+  subscriptions?: PushSubscription[]; delivered_count?: number;
   lat?: number; lng?: number;
 };
-export type Outcome = { status: "sent" | "skipped" | "failed" | "pending"; error?: string };
+export type Outcome = PushOutcome;
+type PushSender = typeof sendPush;
 
+// Spec 8.8 lets dispatch resolve geo_label jobs itself, so there is no separate geo-reverse endpoint.
 export async function geoLabel(job: Pick<Job, "id" | "claim_token">, context: Context): Promise<Outcome> {
   if (context.demo) return { status: "skipped", error: "dry_run" };
   if (typeof context.lat !== "number" || typeof context.lng !== "number") return { status: "skipped", error: "no_geo_coordinates" };
@@ -21,7 +27,7 @@ export async function geoLabel(job: Pick<Job, "id" | "claim_token">, context: Co
   return { status: saved.data.updated ? "sent" : "skipped" };
 }
 
-export async function deliver(job: Job): Promise<Outcome> {
+export async function deliver(job: Job, send: PushSender = sendPush): Promise<Outcome> {
   const validation = await rpc<Context>("svc_outbox_still_valid", { p_id: job.id, p_token: job.claim_token });
   if (!validation.ok) return { status: "pending", error: "outbox_validation" };
   const context = validation.data;
@@ -37,25 +43,20 @@ export async function deliver(job: Job): Promise<Outcome> {
     return { status: result.retryable ? "pending" : "failed", error: result.error };
   }
   const payload = pushPayload(job.template, context.payload ?? {}, context.pickup_id);
-  if (!payload || !context.subscriptions?.length) return { status: "skipped", error: "no_push_target" };
+  if (!payload) return { status: "skipped", error: "no_push_target" };
   const { urgent, ...message } = payload;
-  const outcomes = await Promise.all(context.subscriptions.map(async (subscription) => {
-    const result = await sendPush(subscription, message, urgent);
+  // Each remaining subscription is tried once. Accepted ones are reported back so a retry skips them.
+  const attempts = await Promise.all((context.subscriptions ?? []).map(async (subscription) => {
+    const result = await send(subscription, message, urgent);
     if (!result.ok && result.gone) {
       await rpc("svc_prune_push_subscription", { p_subscription_id: subscription.id, p_endpoint: subscription.endpoint });
     }
-    return result;
+    return { id: subscription.id, result };
   }));
-  if (outcomes.some((result) => result.ok && !result.simulated)) {
-    return outcomes.some((result) => !result.ok && result.retryable)
-      ? { status: "pending", error: "partial_push" } : { status: "sent" };
-  }
-  if (outcomes.some((result) => result.ok && result.simulated)) return { status: "skipped", error: "dry_run" };
-  if (outcomes.some((result) => !result.ok && result.retryable)) return { status: "pending", error: "push_retry" };
-  return { status: "skipped", error: "push_unavailable" };
+  return summarizePush(attempts, context.delivered_count ?? 0);
 }
 
-export async function handleDispatch(request: Request) {
+export async function handleDispatch(request: Request, send: PushSender = sendPush) {
   const methodError = method(request);
   if (methodError) return methodError;
   if (!await validDispatchSecret(request)) return json(request, error("NOT_AUTHENTICATED"), 401);
@@ -67,9 +68,10 @@ export async function handleDispatch(request: Request) {
   while (index < claim.data.jobs.length && Date.now() < deadline - 15_000) {
     const group = claim.data.jobs.slice(index, index + 5);
     await Promise.all(group.map(async (job) => {
-      const outcome = await deliver(job).catch(() => ({ status: "pending" as const, error: "worker_failure" }));
+      const outcome = await deliver(job, send).catch((): Outcome => ({ status: "pending", error: "worker_failure" }));
       const finished = await rpc<{ updated: boolean }>("svc_finish_outbox", {
         p_id: job.id, p_token: job.claim_token, p_status: outcome.status, p_error: outcome.error ?? null,
+        p_delivered_subscription_ids: outcome.delivered?.length ? outcome.delivered : null,
       });
       if (finished.ok && finished.data.updated) counts[outcome.status]++;
     }));

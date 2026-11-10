@@ -1,3 +1,3 @@
 import { handleDispatch } from "../_shared/dispatch.ts";
 
-Deno.serve(handleDispatch);
+Deno.serve((request) => handleDispatch(request));

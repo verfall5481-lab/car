@@ -26,7 +26,8 @@
 }
 
 .rider-form .chip {
-  padding-inline: 9px;
+  position: relative;
+  padding-inline: 16px;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
@@ -37,7 +38,10 @@
 
 .rider-form .chip::before {
   content: "";
-  flex: none;
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  translate: 0 -50%;
   width: 7px;
   height: 7px;
   border-radius: 50%;

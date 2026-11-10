@@ -1,12 +1,9 @@
 package kr.deriro.car.nav
 
 import java.time.Instant
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlinx.coroutines.flow.Flow
 import kr.deriro.car.data.vehicle.LatLng
+import kr.deriro.car.data.vehicle.metersTo
 
 data class Destination(
     val location: LatLng,
@@ -35,17 +32,13 @@ interface NavigationGateway {
     fun supportsArrivalCallback(): Boolean
 }
 
+/** Radius around the destination inside which an arrival position is accepted. */
+const val ARRIVAL_RADIUS_M = 200.0
+
 /** Automatic arrival requires proven session ownership. Untagged events use manual arrival. */
 fun Destination.matchesArrival(event: ArrivalEvent, requestedAt: Instant): Boolean {
     if (event.navSessionId != navSessionId || event.destinationRevision != destinationRevision ||
         event.at.isBefore(requestedAt) || !location.isValid || !event.location.isValid
     ) return false
-
-    val latDelta = Math.toRadians(event.location.lat - location.lat)
-    val lngDelta = Math.toRadians(event.location.lng - location.lng)
-    val a = sin(latDelta / 2) * sin(latDelta / 2) +
-        cos(Math.toRadians(location.lat)) * cos(Math.toRadians(event.location.lat)) *
-        sin(lngDelta / 2) * sin(lngDelta / 2)
-    val meters = 2 * 6_371_000 * asin(sqrt(a.coerceIn(0.0, 1.0)))
-    return meters <= 200
+    return location.metersTo(event.location) <= ARRIVAL_RADIUS_M
 }

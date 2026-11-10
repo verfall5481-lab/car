@@ -347,7 +347,10 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       }), "accepted");
     }
     case "offer": {
-      if (!isAssignee || !isDriver || member.id !== pickup.assigneeId) return fail("NOT_ASSIGNEE");
+      // Same as SQL: an assignee who lost can_drive may still hand off; a vehicle offers only for an eligible driver.
+      if (!isAssignee || member.id !== pickup.assigneeId || (actor.kind === "vehicle" && !isDriver)) return fail("NOT_ASSIGNEE");
+      // 2.2: a car hands off only by declining to everyone; picking a recipient or writing a note is a phone action.
+      if (actor.kind === "vehicle" && (action.toMemberId != null || action.note != null)) return fail("FORBIDDEN");
       if (pickup.status !== "assigned") return fail("INVALID_STATE");
       if (action.toMemberId === memberId) return fail("CANNOT_ACCEPT_OWN_OFFER");
       if ((action.toMemberId && !recipients.includes(action.toMemberId)) || (action.note?.length ?? 0) > 40) return fail("VALIDATION");
@@ -393,6 +396,8 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
     }
     case "depart":
       if (actor.kind !== "member" || !isAssignee) return fail("NOT_ASSIGNEE");
+      // 23.1: holding a trip after can_drive was turned off does not allow driving it.
+      if (!isDriver) return fail("FORBIDDEN");
       if (pickup.status !== "assigned") return fail("INVALID_STATE");
       if (!pickup.destination.confirmed) return fail("LOCATION_UNCONFIRMED");
       return ok(update({ status: "en_route", enRouteAt: now, offer: closeOffer(offer, "cancelled") }), "en_route");

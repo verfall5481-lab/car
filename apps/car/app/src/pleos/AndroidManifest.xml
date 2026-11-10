@@ -11,12 +11,22 @@
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application android:usesCleartextTraffic="false">
         <activity android:name=".PleosActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- V-00 driving layout: one card, at most two buttons, no scroll. Pleos review decides final approval (VR-08). -->
+            <meta-data android:name="distractionOptimized" android:value="true" />
         </activity>
+        <service
+            android:name=".live.PickupTripService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver android:name=".live.CardActionReceiver" android:exported="false" />
     </application>
 </manifest>

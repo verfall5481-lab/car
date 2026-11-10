@@ -1,7 +1,7 @@
 package kr.deriro.car.ui
 
-import android.media.RingtoneManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -15,21 +15,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.Instant
@@ -45,26 +39,18 @@ import kr.deriro.car.live.LivePanel
 import kr.deriro.car.live.LivePickup
 import kr.deriro.car.live.LiveTrip
 import kr.deriro.car.live.VehicleConnection
-import kr.deriro.car.live.VehicleFeed
+import kr.deriro.car.live.belongsTo
 
 @Composable
 internal fun LiveCar(model: LiveCarViewModel, onVehiclePermissions: () -> Unit, onLocationPermission: () -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     val panel = if (state.parked) state.panel else LivePanel.HOME
     BackHandler(enabled = panel != LivePanel.HOME) { model.open(LivePanel.HOME) }
-    val context = LocalContext.current
-    var sounded by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    val newCard = state.visibleCard?.key?.takeIf { panel == LivePanel.HOME && state.connection == VehicleConnection.ONLINE }
-    LaunchedEffect(newCard) {
-        if (newCard != null && newCard !in sounded) {
-            sounded = (sounded + newCard).takeLast(20)
-            runCatching { RingtoneManager.getRingtone(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))?.play() }
-        }
-    }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Charcoal).windowInsetsPadding(WindowInsets.safeDrawing),
         contentAlignment = Alignment.TopCenter) {
         val wide = maxWidth >= 740.dp
+        // Compact changes layout density only; CarTheme keeps the V-00 type floors either way.
         val compact = !wide || maxHeight < 480.dp
         val margin = if (compact) 16.dp else 32.dp
         CarTheme(compact) {
@@ -73,7 +59,11 @@ internal fun LiveCar(model: LiveCarViewModel, onVehiclePermissions: () -> Unit, 
                 Header(state, model)
                 val body = if (state.parked) Modifier.verticalScroll(rememberScrollState()) else Modifier
                 Column(body.fillMaxWidth().weight(1f).padding(bottom = margin)) {
-                    VehicleContent(compact) {
+                    VehicleContent {
+                        // Results and failures stay visible for three seconds in every mode (V-03), one line while driving.
+                        state.notice?.let { notice ->
+                            NoticeBar(LiveCopy.notice(notice.message), if (notice.error) Error else Confirmed, maxLines = if (state.parked) 2 else 1)
+                        }
                         when {
                             !state.configured -> {
                                 Heading(LiveCopy.setup)
@@ -90,10 +80,7 @@ internal fun LiveCar(model: LiveCarViewModel, onVehiclePermissions: () -> Unit, 
                             panel == LivePanel.ABOUT -> About(model)
                             else -> Home(state, model, wide)
                         }
-                        if (state.parked) {
-                            state.error?.let { Info(LiveCopy.failure(it, state.errorDetail), color = Error, maxLines = 2) }
-                            if (state.pending) Info(LiveCopy.working, maxLines = 1)
-                        }
+                        if (state.parked && state.pending) Info(LiveCopy.working, maxLines = 1)
                     }
                 }
             }
@@ -104,10 +91,11 @@ internal fun LiveCar(model: LiveCarViewModel, onVehiclePermissions: () -> Unit, 
 @Composable
 private fun Header(state: LiveCarState, model: LiveCarViewModel) {
     Row(Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = 44.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(CarCopy.appName, style = MaterialTheme.typography.titleLarge, color = Ink)
-        if (state.configured && state.connection != VehicleConnection.ONLINE && !state.parked) {
-            Info(LiveCopy.link(state.connection, null), color = Amber, maxLines = 1)
+        val healthy = state.connection == VehicleConnection.ONLINE && state.contactFresh && state.syncIssue == null
+        if (state.configured && !healthy && !state.parked) {
+            Info(LiveCopy.link(state.connection, state.lastContact, state.contactFresh, state.syncIssue), color = Amber, maxLines = 1)
         } else if (state.pending && !state.parked) {
             Info(LiveCopy.working, color = Amber, maxLines = 1)
         }
@@ -123,8 +111,8 @@ private fun Header(state: LiveCarState, model: LiveCarViewModel) {
 @Composable
 private fun Pairing(state: LiveCarState, model: LiveCarViewModel, wide: Boolean, onVehiclePermissions: () -> Unit) {
     if (!state.parked) {
-        Heading(if (state.permissionSetupAllowed) LiveCopy.permissionsNeeded else CarCopy.stopToPair)
-        if (state.permissionSetupAllowed) CarButton(LiveCopy.permissions, onClick = onVehiclePermissions)
+        Heading(if (state.permissionSetupAllowed) LiveCopy.permissionsNeeded else CarCopy.stopToPair, maxLines = 2)
+        if (state.permissionSetupAllowed) CarButton(LiveCopy.permissions, Modifier.fillMaxWidth(), onClick = onVehiclePermissions)
         return
     }
     val ticket = state.ticket
@@ -135,6 +123,7 @@ private fun Pairing(state: LiveCarState, model: LiveCarViewModel, wide: Boolean,
         }
     }
     val active = ticket != null && now.isBefore(ticket.expiresAt)
+    state.linkError?.let { Info(LiveCopy.failure(it, null), color = Error, maxLines = 2) }
     Split(wide, first = {
         Heading(CarCopy.pairTitle)
         Body(LiveCopy.pairScan)
@@ -175,6 +164,7 @@ private fun Home(state: LiveCarState, model: LiveCarViewModel, wide: Boolean) {
         active?.pickup?.status == "arrived" -> Arrived(active.pickup, state, model, wide)
         active != null -> EnRoute(active.pickup, active, state, model)
         inProgress != null -> EnRoute(inProgress, null, state, model)
+        feed != null && !state.driverReady -> NoDriver(state, model, wide)
         else -> {
             Split(wide && state.parked, first = {
                 if (next == null) Heading(CarCopy.noPickups)
@@ -185,7 +175,7 @@ private fun Home(state: LiveCarState, model: LiveCarViewModel, wide: Boolean) {
                     if (state.parked) next.assignee?.let { Info(LiveCopy.driver(it)) }
                 }
             }, second = { VehicleStatus(state) })
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            ButtonRow {
                 if (next != null && (next.locationConfirmed || state.parked)) {
                     CarButton(if (next.locationConfirmed) CarCopy.depart else CarCopy.location, Modifier.weight(1f), enabled = state.canPickupAct) {
                         model.requestRoute(next)
@@ -194,6 +184,18 @@ private fun Home(state: LiveCarState, model: LiveCarViewModel, wide: Boolean) {
                 if (state.parked) CarButton(CarCopy.today, Modifier.weight(1f), primary = false) { model.open(LivePanel.TODAY) }
             }
         }
+    }
+}
+
+/** Without a selected driver no pickup can be "mine", so say that instead of "no pickups left". */
+@Composable
+private fun NoDriver(state: LiveCarState, model: LiveCarViewModel, wide: Boolean) {
+    Split(wide && state.parked, first = {
+        Heading(LiveCopy.chooseDriver, color = Amber, maxLines = if (state.parked) 2 else 1)
+        Info(if (state.parked) LiveCopy.chooseDriverParked else LiveCopy.chooseDriverDriving, maxLines = 2)
+    }, second = { VehicleStatus(state) })
+    if (state.parked) {
+        CarButton(LiveCopy.chooseDriverButton, Modifier.fillMaxWidth(), enabled = state.vehicle != null) { model.open(LivePanel.SETTINGS) }
     }
 }
 
@@ -209,10 +211,12 @@ private fun VehicleStatus(state: LiveCarState) {
         val energy = if (snapshot != null) LiveCopy.energy(snapshot.rangeKm, snapshot.fuelPct, snapshot.socPct)
             else LiveCopy.energy(stored?.rangeKm, stored?.fuelPct, stored?.socPct)
         Body(if (age == null || age >= 24 * 3_600) LiveCopy.unavailable else energy)
-        if (snapshot == null && stored?.isDemoValue == true) Info(CarCopy.demo, color = Amber)
+        if (snapshot == null && stored?.isDemoValue == true) Info(CarCopy.demoValue, color = Amber)
         if (age != null && age in 6 * 3_600L until 24 * 3_600L) Info(LiveCopy.stale)
-        Info(state.vehicle?.driver?.name?.let(LiveCopy::driver) ?: LiveCopy.noDriver)
-        Info(LiveCopy.link(state.connection, state.lastContact), color = if (state.connection == VehicleConnection.ONLINE) Confirmed else Amber)
+        Info(state.driver?.name?.let(LiveCopy::driver) ?: LiveCopy.noDriver, color = if (state.driverReady) Muted else Amber)
+        val healthy = state.connection == VehicleConnection.ONLINE && state.contactFresh && state.syncIssue == null
+        Info(LiveCopy.link(state.connection, state.lastContact, state.contactFresh, state.syncIssue),
+            color = if (healthy) Confirmed else Amber)
     }
     if (state.feed?.rangeVerdict == "low" || state.feed?.alerts?.isNotEmpty() == true) {
         Info(CarCopy.rangeShort, color = Amber, maxLines = 1)
@@ -227,35 +231,25 @@ private fun NotificationCard(card: FeedCard, state: LiveCarState, model: LiveCar
     }
     val pickup = card.pickup
     val rider = pickup?.let(LiveCopy::rider) ?: LiveCopy.unknownRider
-    val urgent = card.kind in setOf("cancelled_urgent", "not_met")
-    Heading(LiveCopy.cardTitle(card.kind, rider, card.offerFrom), color = if (urgent) Error else Ink,
+    Heading(LiveCopy.cardTitle(card.kind, rider, card.offerFrom), color = if (card.urgent) Error else Ink,
         maxLines = if (state.parked) 2 else 1)
     pickup?.placeLine?.let { Body(it, maxLines = 1) }
+    val actions = card.actions(state.parked, state.feed?.activeTrip?.pickup?.id)
+    val dismissOnly = actions.all { it in setOf("ack", "acknowledge", "dismiss") }
+    val needsDriver = !state.driverReady && !dismissOnly
     val detail = LiveCopy.cardDetail(card.kind) ?: card.offerNote ?: card.requiredKm?.let(LiveCopy::approxTrip)
-    detail?.let { Info(it, maxLines = 1) }
+    // While driving the card keeps three lines (V-00): the missing-driver reason replaces the detail line.
+    if (state.parked || !needsDriver) detail?.let { Info(it, maxLines = 1) }
     if (state.parked) {
         val others = state.feed?.cards.orEmpty().count { it.key !in state.dismissed } - 1
         if (others > 0) Info(LiveCopy.otherAlerts(others), maxLines = 1)
     }
-    val differentTrip = state.feed?.activeTrip?.pickup?.id?.let { pickup != null && it != pickup.id } == true
-    val primary = when {
-        pickup != null && !pickup.locationConfirmed && state.parked && card.kind in setOf("child_request", "rider_request") -> "location"
-        card.primary == "confirm_location" -> if (state.parked) "location" else "accept"
-        card.primary == "start_now" && !state.parked && differentTrip -> "accept"
-        card.primary == "start_now" && pickup?.locationConfirmed == false -> if (state.parked) "location" else "accept"
-        card.primary != null -> card.primary
-        urgent -> "dismiss"
-        else -> null
-    }
-    val actions = listOfNotNull(primary, card.secondary).distinct().filter { state.parked || it !in setOf("boarded", "board", "location") }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    if (needsDriver) Info(LiveCopy.driverNeededForCard, color = Amber, maxLines = 1)
+    ButtonRow {
         for ((index, action) in actions.withIndex()) {
             val label = LiveCopy.action(action, card.offerId != null) ?: continue
-            CarButton(label, Modifier.weight(1f), primary = index == 0, enabled = state.canPickupAct) {
-                if (action == "location" && pickup != null) {
-                    model.open(LivePanel.LOCATION, pickup.id, card.offerId.takeIf { card.kind == "offer_to_me" })
-                } else model.runCard(card, action)
-            }
+            val enabled = if (action in setOf("ack", "acknowledge", "dismiss")) state.canAct || card.alertId == null else state.canPickupAct
+            CarButton(label, Modifier.weight(1f), primary = index == 0, enabled = enabled) { model.runCard(card, action) }
         }
     }
 }
@@ -266,19 +260,25 @@ private fun EnRoute(pickup: LivePickup, trip: LiveTrip?, state: LiveCarState, mo
     Body(LiveCopy.place(pickup), maxLines = 1)
     val mapOpened = trip != null && state.mapSession == trip.sessionId
     val manual = trip != null && state.manualSession == trip.sessionId
+    val mismatch = trip != null && state.mismatchSession == trip.sessionId
+    val automaticArrival = trip != null && state.arrivalSession == trip.sessionId
     if (mapOpened) Info(if (state.parked) LiveCopy.routeMapDetail else LiveCopy.routeMap, maxLines = 1)
     if (pickup.navStatus == "failed" && !manual && !mapOpened) {
-        Info(CarCopy.routeFailed, color = Error, maxLines = 1)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Info(if (mismatch) LiveCopy.routeMismatch else CarCopy.routeFailed, color = Error, maxLines = 1)
+        if (mismatch && state.parked) Info(LiveCopy.routeMismatchDetail, maxLines = 2)
+        ButtonRow {
             CarButton(CarCopy.retry, Modifier.weight(1f), enabled = state.canPickupAct) { model.requestRoute(pickup) }
             if (trip != null) CarButton(CarCopy.continueManually, Modifier.weight(1f), primary = false, enabled = state.canPickupAct) {
                 model.continueManually(trip)
             } else CarButton(CarCopy.arrived, Modifier.weight(1f), primary = false, enabled = state.canPickupAct) { model.arrive(pickup) }
         }
     } else {
-        if (state.parked && !mapOpened && !manual && pickup.navStatus == "ok") Info(LiveCopy.routeRequested, maxLines = 1)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CarButton(CarCopy.arrived, Modifier.weight(1f), enabled = state.canPickupAct) { model.arrive(pickup) }
+        if (state.parked && !mapOpened && !manual && pickup.navStatus == "ok") {
+            Info(if (automaticArrival) LiveCopy.autoArrival else LiveCopy.routeRequested, maxLines = 1)
+        }
+        ButtonRow {
+            // With a watched arrival callback the manual button becomes secondary (V-05).
+            CarButton(CarCopy.arrived, Modifier.weight(1f), primary = !automaticArrival, enabled = state.canPickupAct) { model.arrive(pickup) }
             CarButton(CarCopy.reopen, Modifier.weight(1f), primary = false, enabled = state.canPickupAct) { model.requestRoute(pickup) }
         }
     }
@@ -288,7 +288,7 @@ private fun EnRoute(pickup: LivePickup, trip: LiveTrip?, state: LiveCarState, mo
 private fun Arrived(pickup: LivePickup, state: LiveCarState, model: LiveCarViewModel, wide: Boolean) {
     Split(wide && state.parked, first = {
         Heading(CarCopy.arrived)
-        Info(LiveCopy.arrivedShared, maxLines = 1)
+        Info(LiveCopy.arrivedShared(LiveCopy.rider(pickup)), maxLines = 1)
     }, second = {
         if (state.parked) {
             Title(CarCopy.status(PickupPhase.ARRIVED), color = Amber)
@@ -306,7 +306,7 @@ private fun Location(state: LiveCarState, model: LiveCarViewModel) {
         Heading(CarCopy.locationTitle(LiveCopy.rider(pickup)))
         Body(LiveCopy.place(pickup))
         pickup.accuracyM?.let { Info(LiveCopy.accuracy(it)) }
-        pickup.location?.let { Info("${LiveCopy.locationCoordinates} ${it.lat}, ${it.lng}") }
+        pickup.location?.let { Info(LiveCopy.coordinates(it.lat, it.lng)) }
         val nearby = state.feed?.nearby(pickup).orEmpty()
         if (nearby.isNotEmpty()) Title(LiveCopy.nearPlace)
         for (place in nearby) {
@@ -325,7 +325,7 @@ private fun Switch(state: LiveCarState, model: LiveCarViewModel) {
     val active = state.feed?.activeTrip?.pickup
     val selected = state.selected
     Heading(if (active != null && selected != null) LiveCopy.switch(LiveCopy.rider(active), LiveCopy.rider(selected)) else LiveCopy.routeChange)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    ButtonRow {
         CarButton(LiveCopy.routeChange, Modifier.weight(1f), enabled = state.canPickupAct && selected != null, onClick = model::confirmSwitch)
         CarButton(LiveCopy.keepRoute, Modifier.weight(1f), primary = false) { model.open(LivePanel.HOME) }
     }
@@ -358,10 +358,12 @@ private fun Today(state: LiveCarState, model: LiveCarViewModel) {
             else -> date.toString()
         })
         for (pickup in pickups.sortedWith(compareBy({ !it.belongsTo(feed) }, { it.wantedAt }))) {
-            CarButton(LiveCopy.pickupLine(pickup).ifBlank { LiveCopy.place(pickup) }, Modifier.fillMaxWidth(), primary = false) {
-                model.open(LivePanel.PICKUP, pickup.id)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CarButton(LiveCopy.pickupLine(pickup).ifBlank { LiveCopy.place(pickup) }, Modifier.fillMaxWidth(), primary = false) {
+                    model.open(LivePanel.PICKUP, pickup.id)
+                }
+                Info(LiveCopy.pickupMeta(pickup))
             }
-            Info(LiveCopy.pickupMeta(pickup))
         }
     }
     CarButton(CarCopy.back, Modifier.fillMaxWidth(), primary = false) { model.open(LivePanel.HOME) }
@@ -397,7 +399,7 @@ private fun Settings(state: LiveCarState, model: LiveCarViewModel, onVehiclePerm
     Rule()
     Title(LiveCopy.driveSettings)
     for (driver in state.feed?.drivers.orEmpty()) {
-        val selected = driver.id == state.vehicle?.driver?.id
+        val selected = driver.id == state.driver?.id
         CarButton(driver.name, Modifier.fillMaxWidth(), primary = selected, enabled = state.canAct && !selected) { model.setDriver(driver) }
     }
     Rule()
@@ -413,7 +415,7 @@ private fun Settings(state: LiveCarState, model: LiveCarViewModel, onVehiclePerm
 @Composable
 private fun Unpair(state: LiveCarState, model: LiveCarViewModel) {
     Heading(LiveCopy.unpair)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    ButtonRow {
         CarButton(CarCopy.unpair, Modifier.weight(1f), enabled = state.canAct, onClick = model::unpair)
         CarButton(CarCopy.back, Modifier.weight(1f), primary = false) { model.open(LivePanel.SETTINGS) }
     }
@@ -426,6 +428,3 @@ private fun About(model: LiveCarViewModel) {
     Info(LiveCopy.openSource)
     CarButton(CarCopy.back, Modifier.fillMaxWidth(), primary = false) { model.open(LivePanel.SETTINGS) }
 }
-
-private fun LivePickup.belongsTo(feed: VehicleFeed?) = feed != null && vehicleId == feed.vehicle.id &&
-    assigneeId != null && assigneeId == feed.vehicle.driver?.id

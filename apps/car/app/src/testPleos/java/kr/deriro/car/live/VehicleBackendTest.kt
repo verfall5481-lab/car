@@ -86,7 +86,7 @@ class VehicleBackendTest {
         }.use { server ->
             val api = VehicleBackend(server.config, vault)
             assertTrue(api.rpc("vehicle_pair_status").getBoolean("paired"))
-            val cached = listOf(VehicleBackend.FEED_SLOT, VehicleBackend.TICKET_SLOT, VehicleBackend.NAV_REPORT_SLOT)
+            val cached = listOf(VehicleBackend.FEED_SLOT, VehicleBackend.TICKET_SLOT, VehicleBackend.NAV_REPORTS_SLOT)
             cached.forEach { vault.write(it, "private-data") }
             revoke.set(true)
             val failure = runCatching { api.rpc("vehicle_pair_status") }.exceptionOrNull() as BackendFailure

@@ -4,13 +4,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.asin
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 import kr.deriro.car.data.vehicle.Gear
 import kr.deriro.car.data.vehicle.LatLng
+import kr.deriro.car.data.vehicle.metersTo
 import kr.deriro.car.data.vehicle.VehicleSnapshot
 import kr.deriro.car.nav.Destination
 import kr.deriro.car.nav.NavResult
@@ -119,9 +116,45 @@ internal data class FeedCard(
     val nearby: List<SavedPlace>,
     val version: Int?,
 ) {
-    val key: String get() = "${kind}/${pickup?.id.orEmpty()}/${offerId.orEmpty()}/${alertId.orEmpty()}/${version ?: 0}"
+    val key: String get() = "$alertKey/${version ?: 0}"
+
+    /** Identity of the card itself (type and subject), unchanged when the pickup version moves. Used for the alert sound. */
+    val alertKey: String get() = "${kind}/${pickup?.id.orEmpty()}/${offerId.orEmpty()}/${alertId.orEmpty()}"
     val parkedOnly: Boolean get() = kind in setOf("boarding_check", "low_range")
+    val urgent: Boolean get() = kind in URGENT_CARD_KINDS
+
+    /**
+     * Buttons for this card, primary first. While driving at most two remain, and parked-only actions
+     * (boarding, location confirmation) are dropped.
+     */
+    fun actions(parked: Boolean, activeTripPickupId: String?): List<String> {
+        val differentTrip = activeTripPickupId != null && pickup != null && activeTripPickupId != pickup.id
+        val first = when {
+            pickup != null && !pickup.locationConfirmed && parked && kind in REQUEST_CARD_KINDS -> "location"
+            primary == "confirm_location" -> if (parked) "location" else "accept"
+            primary == "start_now" && !parked && differentTrip -> "accept"
+            primary == "start_now" && pickup?.locationConfirmed == false -> if (parked) "location" else "accept"
+            primary != null -> primary
+            urgent -> "dismiss"
+            else -> null
+        }
+        return listOfNotNull(first, secondary).distinct()
+            .filter { it in KNOWN_CARD_ACTIONS && (parked || it !in PARKED_CARD_ACTIONS) }
+            .take(2)
+    }
 }
+
+internal val REQUEST_CARD_KINDS = setOf("child_request", "rider_request")
+internal val URGENT_CARD_KINDS = setOf("cancelled_urgent", "not_met")
+
+/** Spec 13.3 plus V-05: new requests, offers and cancellations raise a heads-up while the app is in the background. */
+internal val HEADS_UP_CARD_KINDS = REQUEST_CARD_KINDS + setOf("offer_to_me") + URGENT_CARD_KINDS
+internal val KNOWN_CARD_ACTIONS = setOf("start_now", "accept", "decline", "handoff_all", "boarded", "board", "ack", "acknowledge", "dismiss", "location")
+internal val PARKED_CARD_ACTIONS = setOf("boarded", "board", "location")
+
+/** Assigned to this car and to its current driver. */
+internal fun LivePickup.belongsTo(feed: VehicleFeed?): Boolean = feed != null && vehicleId == feed.vehicle.id &&
+    assigneeId != null && assigneeId == feed.vehicle.driver?.id
 
 internal data class RangeAlert(val id: String, val rangeKm: Double?, val requiredKm: Double?, val pickupCount: Int?)
 internal data class LiveTrip(val pickup: LivePickup, val sessionId: String, val destinationRevision: Int)
@@ -144,7 +177,7 @@ internal data class VehicleFeed(
     fun nearby(pickup: LivePickup): List<SavedPlace> {
         val position = pickup.location ?: return emptyList()
         val choices = cards.firstOrNull { it.pickup?.id == pickup.id }?.nearby.orEmpty().ifEmpty { places }
-        return choices.map { place -> place.copy(distanceM = position.metersTo(place.location)) }
+        return choices.map { place -> place.copy(distanceM = position.metersTo(place.location).roundToInt()) }
             .filter { (it.distanceM ?: Int.MAX_VALUE) <= 1_000 }
             .sortedBy(SavedPlace::distanceM).take(3)
     }
@@ -234,11 +267,4 @@ private fun JSONObject.point(latKey: String = "lat", lngKey: String = "lng"): La
     val lat = number(latKey) ?: return null
     val lng = number(lngKey) ?: return null
     return LatLng(lat, lng).takeIf(LatLng::isValid)
-}
-
-private fun LatLng.metersTo(other: LatLng): Int {
-    val latStep = Math.toRadians(other.lat - lat) / 2
-    val lngStep = Math.toRadians(other.lng - lng) / 2
-    val a = sin(latStep) * sin(latStep) + cos(Math.toRadians(lat)) * cos(Math.toRadians(other.lat)) * sin(lngStep) * sin(lngStep)
-    return (2 * 6_371_000 * asin(sqrt(a.coerceIn(0.0, 1.0)))).roundToInt()
 }

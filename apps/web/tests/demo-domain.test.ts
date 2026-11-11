@@ -162,6 +162,27 @@ test('"못 가요" records the refusal of the driver; the last eligible driver c
   assert.equal(act(own, dad, { type: 'accept' }).pickups[0].assigneeId, dad.id);
 });
 
+test('a car that lost the race hears who took the trip by name, with or without the request offer ID (V-03, 4.5)', () => {
+  const requested = request();
+  const taken = act(requested, mom, { type: 'accept' });
+  const start = { type: 'vehicle_start', expectedVersion: 1, sessionId: 's', actionId: 'a' } as const;
+  // The request card sends no offer ID, or the family-wide offer's ID it was drawn with.
+  for (const offerId of [undefined, requested.pickups[0].offer?.id]) {
+    const lost = applyDemoAction(taken, 'pickup', car, { ...start, offerId }, now);
+    assert.equal(lost.ok ? 'ok' : lost.code, 'ALREADY_TAKEN');
+    assert.equal(lost.ok ? undefined : lost.by, '엄마');
+    assert.equal(lost.state, taken);
+  }
+  // A guardian who accepts too late is told the same name.
+  const late = applyDemoAction(taken, 'pickup', dad, { type: 'accept' }, now);
+  assert.equal(late.ok ? 'ok' : late.code, 'ALREADY_TAKEN');
+  assert.equal(late.ok ? undefined : late.by, '엄마');
+  // Other refusals name nobody.
+  const stale = applyDemoAction(requested, 'pickup', car, { ...start, expectedVersion: 9 }, now);
+  assert.equal(stale.ok ? 'ok' : stale.code, 'STALE_VERSION');
+  assert.equal(stale.ok ? undefined : stale.by, undefined);
+});
+
 test('a routine edit moves its untouched occurrences, keeps accepted ones, and a delete cancels the rest (4.4 #12, S-28)', () => {
   const seed = freshDemo();
   const state = ok(routineOccurrence(seed, seed.routines[0], now, 'pickup'));

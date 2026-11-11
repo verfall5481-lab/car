@@ -17,7 +17,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const startedAt = new Date().toISOString();
 
 type Call = { name: string; body: Record<string, unknown>; at: number };
-type Status = 'open' | 'en_route' | 'arrived' | 'completed';
+type Status = 'open' | 'assigned' | 'en_route' | 'arrived' | 'completed';
 
 function anonymousSession() {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -35,6 +35,10 @@ class MockVehicleBackend {
   hasPickup = false;
   declined = false;
   status: Status = 'open';
+  /** Who holds the pickup once it is taken; this car's driver unless a guardian won the race. */
+  assignee = { id: dad, name: '아빠' };
+  /** V-03: a guardian who takes the request after this car drew its card and before its "출발하고 안내" arrives. */
+  raceWinner: { id: string; name: string } | null = null;
   version = 1;
   session: string | null = null;
   navStatus = 'none';
@@ -58,16 +62,19 @@ class MockVehicleBackend {
 
   row() {
     const open = this.status === 'open';
+    // A pickup a guardian took by phone has no car and has not departed.
+    const byPhone = this.status === 'assigned';
     const at = (when: boolean) => when ? startedAt : null;
     return {
       id: pickupId, family_id: familyId, rider_id: riderId, rider_member_id: null, rider_name: '할머니', child_name: '할머니',
       status: this.status, source: 'request', routine_id: null, occurrence_date: null, is_customized: false,
-      assignee_member_id: open ? null : dad, assignee_display_name: open ? null : '아빠', vehicle_id: open ? null : vehicleId,
+      assignee_member_id: open ? null : this.assignee.id, assignee_display_name: open ? null : this.assignee.name,
+      vehicle_id: open || byPhone ? null : vehicleId,
       place_id: placeId, pickup_point_id: null, location_source: 'saved_place', location_confirmed: true,
       dest_lat: 37.501, dest_lng: 127.031, dest_label: '도서관', pin_note: null,
       version: this.version, assignment_round: open ? 0 : 1, destination_revision: 1,
       nav_session_id: this.session, nav_destination_revision: this.session ? 1 : null, nav_status: this.navStatus, last_start_action_id: this.lastAction,
-      wanted_at: startedAt, created_at: startedAt, updated_at: startedAt, accepted_at: at(!open), en_route_at: at(!open),
+      wanted_at: startedAt, created_at: startedAt, updated_at: startedAt, accepted_at: at(!open), en_route_at: at(!open && !byPhone),
       arrived_at: at(this.status === 'arrived' || this.status === 'completed'), arrived_source: null,
       completed_at: this.status === 'completed' ? new Date().toISOString() : null, cancelled_at: null, cancel_reason: null, expired_at: null,
       closed_unconfirmed_at: null, rider_ready_at: null, not_met_reported_at: null, cancelled_by_kind: null, completed_by_kind: null,
@@ -107,7 +114,7 @@ class MockVehicleBackend {
 
   answer(name: string, body: Record<string, unknown>): { ok: true; data: unknown } | { ok: false; error: { code: string; detail: object } } {
     const ok = (data: unknown) => ({ ok: true as const, data });
-    const fail = (code: string) => ({ ok: false as const, error: { code, detail: {} } });
+    const fail = (code: string, detail: object = {}) => ({ ok: false as const, error: { code, detail } });
     const start = () => ({ pickup: this.row(), nav_session_id: this.session, destination_revision: 1, dest: { lat: 37.501, lng: 127.031, label: '도서관', note: null } });
     switch (name) {
       case 'vehicle_pair_start':
@@ -122,6 +129,13 @@ class MockVehicleBackend {
       }
       case 'vehicle_start_now': {
         if (this.status === 'en_route' && body.p_action_id === this.lastAction) return ok(start());
+        if (this.status === 'open' && this.raceWinner) {
+          this.status = 'assigned';
+          this.assignee = this.raceWinner;
+          this.version++;
+        }
+        // 8.3.1: a car that is not the trip's car hears who holds it, before the version check; nothing is written.
+        if (this.status === 'assigned' && this.assignee.id !== dad) return fail('ALREADY_TAKEN', { by: this.assignee.name });
         if (body.p_expected_version !== this.version) return fail('STALE_VERSION');
         if (this.status === 'open') {
           this.status = 'en_route';
@@ -241,7 +255,8 @@ test('"출발하고 안내" sends an action id, a navigation failure keeps the t
   await screen(page).getByRole('button', { name: '출발하고 안내' }).click();
   await expect(screen(page).getByRole('heading', { name: '할머니에게 가는 중' })).toBeVisible();
   const [first] = backend.named('vehicle_start_now');
-  expect(first.body).toEqual({ p_pickup_id: pickupId, p_expected_version: 1, p_action_id: expect.stringMatching(uuid), p_offer_id: offerId });
+  // 8.3.1: only a handoff card sends its offer ID. The request card carries the family-wide offer's ID and sends none.
+  expect(first.body).toEqual({ p_pickup_id: pickupId, p_expected_version: 1, p_action_id: expect.stringMatching(uuid) });
   const firstSession = backend.session!;
   await expect(simulator(page).getByText('안내 결과를 기다리고 있어요')).toBeVisible();
   await expect(simulator(page).getByText(`안내 세션 ${firstSession.slice(0, 8)} · 목적지 버전 1`)).toBeVisible();
@@ -324,6 +339,29 @@ test('a late arrival callback from an older navigation session is ignored; the c
   await expect(page.locator('.toast')).toHaveText('도착 콜백을 반영했어요.');
   await expect(screen(page).getByRole('heading', { name: '도착했어요' })).toBeVisible();
   expect(backend.named('mark_arrived')[1].body).toEqual({ p_pickup_id: pickupId, p_source: 'nav_callback', p_nav_session_id: backend.session, p_destination_revision: 1 });
+});
+
+test('a car that lost the race is told who took the trip and its card closes; nothing departs (V-03)', async ({ context, page }) => {
+  const backend = new MockVehicleBackend({ hasPickup: true });
+  await stubBackend(context, backend);
+  await pair(page, backend);
+  await expect(screen(page).getByRole('heading', { name: '할머니가 데리러 와 달래요' })).toBeVisible();
+  // While driving the feed has no day list, so the name can only come from the answer's detail.by.
+  await simulator(page).getByRole('button', { name: '주행 (D)' }).click();
+  await expect.poll(() => backend.named('upsert_vehicle_state').at(-1)?.body.p_gear).toBe('D');
+  await expect(screen(page).getByRole('heading', { name: '할머니가 데리러 와 달래요' })).toBeVisible();
+  // Mom accepts on her phone while this car still shows the request card.
+  backend.raceWinner = { id: mom, name: '엄마' };
+  await screen(page).getByRole('button', { name: '출발하고 안내' }).click();
+  await expect(page.locator('.toast')).toHaveText('엄마가 먼저 맡았어요');
+  await expect(screen(page).getByRole('heading', { name: '할머니가 데리러 와 달래요' })).toHaveCount(0);
+  await expect(screen(page).getByRole('heading', { name: '할머니에게 가는 중' })).toHaveCount(0);
+  // One call, not retried; the trip stays mom's and the car opened no guidance.
+  expect(backend.named('vehicle_start_now')).toHaveLength(1);
+  expect(backend.status).toBe('assigned');
+  expect(backend.assignee.id).toBe(mom);
+  expect(backend.session).toBeNull();
+  expect(backend.named('report_nav_result')).toHaveLength(0);
 });
 
 test('"못 가요" sends vehicle_decline and every simulated state is uploaded as a demo value', async ({ context, page }) => {

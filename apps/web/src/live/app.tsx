@@ -54,7 +54,8 @@ function GuardianDesk({ session }: { session: Session }) {
   const guardianId = session.user.id;
   const overview = useQuery({ queryKey: ['family', guardianId], queryFn: ({ signal }) => client.rpc('get_family_overview', {}, overviewSchema, signal) });
   const family = overview.data?.family.id;
-  const showToday = path === '/p' || path === '/p/request' || path.startsWith('/p/vehicles/');
+  // P-08 and P-19 read the days off and tomorrow's occurrences from the same feed (24.6).
+  const showToday = path === '/p' || path === '/p/request' || path.startsWith('/p/vehicles/') || path === '/p/routines' || path === '/p/unavailable';
   const today = useQuery({ queryKey: ['today', guardianId, family], enabled: Boolean(family && showToday),
     queryFn: ({ signal }) => client.rpc('get_today', { p_days: 2 }, todaySchema, signal), refetchInterval: 30_000 });
   const detail = useQuery({ queryKey: ['pickup', guardianId, family, pickupRoute?.[1]], enabled: Boolean(family && pickupRoute),

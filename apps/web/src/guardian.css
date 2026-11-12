@@ -187,6 +187,46 @@
 .guardian-radius button span { color: var(--muted); }
 .guardian-notification-record { text-align: left; }
 
+/* 24장 갈 사람이 없을 때 */
+.success-text { color: var(--green); }
+.guardian-off-day { display: block; margin-bottom: 2px; color: #865a0c; font-weight: 750; }
+.guardian-routine-link span:has(> .badge) { flex-wrap: wrap; row-gap: 5px; }
+.guardian-routine-link .badge { white-space: nowrap; }
+.guardian-card-note { font-weight: 700; overflow-wrap: anywhere; }
+.guardian-card--later { border-top-color: var(--line); border-top-width: 1px; }
+.guardian-card--later .guardian-card-title strong { font-variant-numeric: tabular-nums; flex: none; }
+.guardian-card--later h3 { font-size: 1.05rem; }
+.guardian-card--later .guardian-actions { margin-top: 2px; }
+.guardian-card--later .guardian-text-link { margin-block: -4px -8px; }
+.guardian-text-link { display: inline-flex; align-items: center; gap: 3px; justify-self: start; min-height: 44px; color: var(--muted); font-size: .86rem; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; }
+.guardian-actions--text { margin-top: 0; }
+.guardian-actions--text .button { min-height: 44px; color: var(--muted); font-size: .88rem; }
+/* With "못 간다고 알리기" the text row can hold three buttons; a button that does not fit moves down whole. */
+.guardian-actions--foot { flex-wrap: wrap; column-gap: 4px; row-gap: 0; }
+.guardian-actions--foot > * { flex: 1 1 auto; padding-inline: 8px; white-space: nowrap; }
+.guardian-next-day > h2 { margin-bottom: -2px; }
+.no-driver-sheet-when { margin-top: -10px; }
+.no-driver-sheet-choices { display: grid; }
+.no-driver-sheet-choices legend { margin-bottom: 2px; color: var(--muted); font-size: .84rem; font-weight: 700; }
+.no-driver-sheet-choices .guardian-note { margin-top: 8px; }
+.no-driver-sheet .place-meta { align-items: flex-start; line-height: 1.45; text-wrap: pretty; }
+.no-driver-sheet .place-meta svg { margin-top: 1px; }
+.place-fallback { display: grid; gap: 8px; }
+.place-fallback legend { margin-bottom: 6px; font-size: .87rem; font-weight: 700; }
+.unavailable-page { display: grid; align-content: start; gap: 16px; }
+.unavailable-page > p.muted { font-size: .92rem; }
+/* 2px columns keep each day at least 44px wide on a 360px phone (10.7). */
+.unavailable-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px 2px; }
+.unavailable-weekday { text-align: center; color: var(--muted); font-size: .76rem; font-weight: 700; }
+.unavailable-cell { display: grid; justify-items: stretch; gap: 2px; min-width: 0; }
+.unavailable-day { min-height: 44px; border: 1px solid transparent; border-radius: 9px; background: var(--neutral); font-size: .95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.unavailable-day[aria-pressed="true"] { background: var(--amber); border-color: var(--amber); color: var(--ink); }
+.unavailable-day:disabled { opacity: .56; }
+.unavailable-others { min-height: 16px; text-align: center; color: var(--muted); font-size: .7rem; font-weight: 700; line-height: 16px; overflow-wrap: anywhere; }
+.unavailable-gaps h2 { font-size: 1.04rem; }
+.unavailable-gaps .row-title small span.danger-text { color: var(--red); }
+.unavailable-held { align-items: flex-start; }
+
 @media (max-width: 355px) {
   .guardian-timeline-row { gap: 6px; }
   .guardian-timeline-row small { max-width: 64px; }

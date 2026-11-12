@@ -24,7 +24,12 @@ export const inherentGaps: readonly { field: string; reason: string }[] = [
   { field: "sql.navStatus", reason: "TS has no nav_status and no report_nav_result; the demo keeps navigation failure on the car." },
   {
     field: "sql.cancelReason",
-    reason: "TS neither stores nor checks the reason at run time (only its type does); SQL maps and validates it.",
+    reason: "Compared as cancelReason. Only SQL rejects an unknown reason (VALIDATION); the TS action type allows none.",
+  },
+  {
+    field: "24.4 notices",
+    reason: "nobody_available, no_driver, fallback_acknowledged, fb5/fb10 reminders and 내일 담당 없음 are outbox rows: " +
+      "SQL only, checked by supabase/tests/no_driver.test.sql. The demo shows cards instead (24.7).",
   },
   {
     field: "sql.stamps",
@@ -76,10 +81,14 @@ export function expectationErrors(outcome: Outcome, expect: Expect, side: Side):
   }
   const scalars = [
     "by", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed", "destinationRevision",
-    "customized", "announced", "navSession", "newNavSession", "pickupCount",
+    "customized", "announced", "navSession", "newNavSession", "pickupCount", "cancelReason", "fallbackNote", "fallbackBy",
+    "fallbackAcked",
   ] as const;
   for (const field of scalars) {
     if (expect[field] !== undefined) mismatch(field, expect[field], outcome[field]);
+  }
+  if (expect.available !== undefined) {
+    mismatch("available", expect.available === null ? null : sorted(expect.available), outcome.available);
   }
   if (expect.set !== undefined) mismatch("set", sorted(expect.set), sorted(outcome.set));
   if (expect.events !== undefined) mismatch("events", expect.events, outcome.events);

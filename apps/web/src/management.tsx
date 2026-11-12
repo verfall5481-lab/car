@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { Bell, CalendarDays, CarFront, Check, CircleAlert, CircleHelp, Clock3, Map, MapPin, Plus, QrCode, Search, Settings, Shield, Smartphone, UserRound, Users } from 'lucide-react';
+import { Bell, CalendarDays, CalendarX, CarFront, Check, CircleAlert, CircleHelp, Clock3, Map, MapPin, Plus, QrCode, Search, Settings, Shield, Smartphone, UserRound, Users } from 'lucide-react';
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { isActivePickup, isCoordinates } from '@deriro/contracts';
+import { fallbackNoteText, isActivePickup, isCoordinates } from '@deriro/contracts';
 import { clock, copy, dateLabel } from './copy.ts';
-import { changed, demoRoutinesToday, familyId, formatPairCode, freshDemo, minute, nameOf, normalizePairCode, pairCodeLength, pairVehicle, rangeEstimate, reviseRoutine, routineOccurrence, setDemoTime, setVehicleDriver, skipOccurrences, unpairVehicle, vehiclePaired } from './demo-domain.ts';
+import { changed, demoRoutinesToday, familyId, formatPairCode, freshDemo, heldPickupIds, minute, nameOf, normalizePairCode, pairCodeLength, pairVehicle, rangeEstimate, reviseRoutine, routineOccurrence, setDemoTime, setDemoUnavailableDay, setVehicleDriver, skipOccurrences, unpairVehicle, vehiclePaired } from './demo-domain.ts';
 import type { DemoState, Person, Routine } from './demo-domain.ts';
+import { routineGap } from './guardian-view.ts';
+import { PlaceFallbackField, UnavailablePage } from './no-driver.tsx';
+import type { DayToggle } from './no-driver.tsx';
 import { Badge, Button, HeaderBell, MapPreview, MobileHeader, pinOrigin, Row, Sheet, useClock, useCommit, useToast, uid } from './ui.tsx';
 import { DemoFamilySetup, DemoGuardianInstall, DemoGuardianInvite, DemoGuardianLogin, InviteQr } from './guardian-onboarding.tsx';
 import { demoStore } from './demo-store.ts';
@@ -26,8 +29,10 @@ function Routines({ state, member }: Props) {
     if (result.ok) setDisable(undefined);
   }
   return <><MobileHeader title={copy.app}><HeaderBell /></MobileHeader>
-    <div className="mobile-content guardian-routines"><p className="muted">{dateLabel(now)}</p><div className="guardian-section-heading"><h2>{copy.routine}</h2><Link className="button button--plain" to="/p/routines/new">{copy.add}</Link></div>
-      {state.routines.map((routine) => <RoutineListRow key={routine.id} id={routine.id} name={nameOf(state, routine.requester.id)} schedule={`${routine.days.map((day) => copy.weekdays[day]).join(' ')} ${routine.time}`} place={state.places.find((place) => place.id === routine.placeId)?.label ?? copy.location} assignee={nameOf(state, routine.assigneeId)} car={routine.vehicleId ? state.vehicle.name : undefined} enabled={routine.enabled} toggle={() => {
+    <div className="mobile-content guardian-routines"><p className="muted">{dateLabel(now)}</p>
+      <UnavailableRow />
+      <div className="guardian-section-heading"><h2>{copy.routine}</h2><Link className="button button--plain" to="/p/routines/new">{copy.add}</Link></div>
+      {state.routines.map((routine) => <RoutineListRow key={routine.id} id={routine.id} name={nameOf(state, routine.requester.id)} schedule={`${routine.days.map((day) => copy.weekdays[day]).join(' ')} ${routine.time}`} place={state.places.find((place) => place.id === routine.placeId)?.label ?? copy.location} assignee={nameOf(state, routine.assigneeId)} car={routine.vehicleId ? state.vehicle.name : undefined} gap={routineGap(state, routine, now)} enabled={routine.enabled} toggle={() => {
         if (routine.enabled && state.pickups.some((pickup) => state.occurrences[pickup.id] === routine.id && ['open', 'assigned'].includes(pickup.status))) setDisable(routine);
         else void toggle(routine, !routine.enabled);
       }} />)}
@@ -37,9 +42,15 @@ function Routines({ state, member }: Props) {
   </>;
 }
 
-export function RoutineListRow({ id, name, schedule, place, assignee, car, enabled, toggle, pending }: { id: string; name: string; schedule: string; place: string; assignee?: string; car?: string; enabled: boolean; toggle: () => void; pending?: boolean }) {
+/** P-08's first line into P-19 (24.5). */
+export function UnavailableRow() {
+  return <Row icon={<CalendarX size={19} />} title={copy.unavailableTitle} to="/p/unavailable" />;
+}
+
+/** `gap`: today's or tomorrow's default driver marked that day off, so "이번엔 담당 없음" (24.5 P-08). */
+export function RoutineListRow({ id, name, schedule, place, assignee, car, enabled, toggle, pending, gap = false }: { id: string; name: string; schedule: string; place: string; assignee?: string; car?: string; enabled: boolean; toggle: () => void; pending?: boolean; gap?: boolean }) {
   return <article className="guardian-routine-row">
-    <Link to={`/p/routines/${id}`} className="guardian-routine-link"><strong>{name}</strong><span><CalendarDays size={17} />{schedule}</span><span><MapPin size={17} />{place}</span><span>{car ? <CarFront size={17} /> : <UserRound size={17} />}{copy.defaultAssignee} {assignee || copy.noAssignee}{car ? `, ${car}` : ''}</span></Link>
+    <Link to={`/p/routines/${id}`} className="guardian-routine-link"><strong>{name}</strong><span><CalendarDays size={17} />{schedule}</span><span><MapPin size={17} />{place}</span><span>{car ? <CarFront size={17} /> : <UserRound size={17} />}{copy.defaultAssignee} {assignee || copy.noAssignee}{car ? `, ${car}` : ''}{gap && <Badge>{copy.routineNoAssigneeThisTime}</Badge>}</span></Link>
     <label className="guardian-routine-toggle"><span>{enabled ? copy.routineOn : copy.routineOff}</span><input type="checkbox" role="switch" className="guardian-switch" aria-label={`${name} ${copy.routine}`} checked={enabled} disabled={pending} onChange={toggle} /></label>
   </article>;
 }
@@ -49,8 +60,23 @@ function Family({ state, member }: Props) {
     <section><h2>{copy.familyMembers}</h2>{state.members.map((person) => <Row key={person.id} icon={<UserRound size={19} />} title={person.id === member.id ? `${person.name} (${copy.me})` : person.name} to={`/p/members/${person.id}`} />)}<Row icon={<Plus size={19} />} title={copy.guardianInvite} to="/p/family/invite" /></section>
     <section><h2>{copy.person}</h2>{state.riders.filter((rider) => !rider.archivedAt).map((rider) => <Row key={rider.id} icon={<UserRound size={19} />} title={rider.name} trailing={rider.connected ? copy.connectedPhone : copy.unconnectedPhone} to={`/p/riders/${rider.id}`} />)}<Row icon={<Plus size={19} />} title={copy.addRider} to="/p/riders/new" /></section>
     <section><h2>{copy.cars}</h2>{vehiclePaired(state.vehicle) && <Row icon={<CarFront size={19} />} title={state.vehicle.name} caption={copy.range(state.vehicle.range)} trailing={`${copy.driver} ${nameOf(state, state.vehicle.currentDriverId)}`} to={`/p/vehicles/${state.vehicle.id}`} />}<Row icon={<Plus size={19} />} title={copy.carConnect} to="/p/vehicles/pair" /></section>
-    <section><h2>{copy.places}</h2>{state.places.filter((place) => place.archivedAt == null).map((place) => <Row key={place.id} icon={<MapPin size={19} />} title={place.label} to={`/p/places/${place.id}`} />)}<Row icon={<Plus size={19} />} title={copy.placeAdd} to="/p/places/new" /></section>
+    <section><h2>{copy.places}</h2>{state.places.filter((place) => place.archivedAt == null).map((place) => <Row key={place.id} icon={<MapPin size={19} />} title={place.label} caption={place.fallbackNote || undefined} to={`/p/places/${place.id}`} />)}<Row icon={<Plus size={19} />} title={copy.placeAdd} to="/p/places/new" /></section>
   </div></>;
+}
+
+/** P-19 in the demo: the store applies `set_unavailable_day` and reports the trips this guardian still holds that day. */
+function DemoUnavailable({ state, member }: Props) {
+  const commit = useCommit();
+  const toggle: DayToggle = async (day, unavailable) => {
+    let held = 0;
+    const result = await commit((current, now) => {
+      const next = setDemoUnavailableDay(current, member.id, day, unavailable, now);
+      if (next.ok) held = heldPickupIds(next.state, member.id, day).length;
+      return next;
+    });
+    return { ok: result.ok, held };
+  };
+  return <UnavailablePage state={state} member={member} toggle={toggle} />;
 }
 
 function SettingsPage({ state, member }: Props) {
@@ -90,6 +116,7 @@ export function GuardianManagement(props: Props) {
   const location = useLocation();
   const path = location.pathname.replace(/\/$/, '');
   if (path === '/p/routines') return <Routines {...props} />;
+  if (path === '/p/unavailable') return <DemoUnavailable {...props} />;
   if (path === '/p/family') return <Family {...props} />;
   if (path === '/p/settings') return <SettingsPage {...props} />;
   if (path === '/p/demo') return <DemoTools {...props} />;
@@ -230,6 +257,7 @@ function PlaceEditor({ state, id }: Props & { id: string }) {
   const existing = state.places.find((place) => place.id === id);
   const routeState = useLocation().state as { coords?: { lat: number; lng: number }; fromPickup?: string } | null;
   const [label, setLabel] = useState(existing?.label ?? '');
+  const [fallbackNote, setFallbackNote] = useState(existing?.fallbackNote ?? '');
   const [kind, setKind] = useState<string>(existing?.kind ?? copy.placeKinds[3]);
   const [radius, setRadius] = useState(existing?.radiusM ?? 150);
   const [coords, setCoords] = useState(existing ?? (routeState?.coords && isCoordinates(routeState.coords) ? routeState.coords : pinOrigin));
@@ -256,11 +284,13 @@ function PlaceEditor({ state, id }: Props & { id: string }) {
     <h1>{existing ? copy.placeEdit : copy.placeAdd}</h1>
     <form className="stack" onSubmit={async (event) => {
       event.preventDefault();
-      const place = { id: existing?.id ?? uid(), familyId, label: label.trim(), kind, radiusM: radius, lat: coords.lat, lng: coords.lng };
+      // upsert_place: a blank "못 갈 때 안내" clears it (24.6).
+      const place = { id: existing?.id ?? uid(), familyId, label: label.trim(), kind, radiusM: radius, lat: coords.lat, lng: coords.lng, fallbackNote: fallbackNoteText(fallbackNote) };
       await commit((current) => changed({ ...current, places: existing ? current.places.map((item) => item.id === id ? place : item) : [...current.places, place] }));
       navigate(routeState?.fromPickup && /^[\w-]+$/.test(routeState.fromPickup) ? `/p/pickups/${routeState.fromPickup}/location` : '/p/family');
     }}>
       <MapPreview coords={coords} onMove={setCoords} uncertain /><label className="field">{copy.name}<input required maxLength={30} value={label} onChange={(event) => setLabel(event.target.value)} /></label>
+      <PlaceFallbackField value={fallbackNote} onChange={setFallbackNote} />
       <fieldset><legend>{copy.kind}</legend><div className="chips">{copy.placeKinds.map((item) => <button type="button" className="chip" aria-pressed={item === kind} key={item} onClick={() => setKind(item)}>{item}</button>)}</div></fieldset>
       <fieldset><legend>{copy.radius}</legend><div className="guardian-radius">{[[100, copy.narrow], [150, copy.normal], [300, copy.wide]].map(([metres, title]) => <button key={metres} type="button" aria-pressed={radius === metres} onClick={() => setRadius(Number(metres))}><strong>{title}</strong><span>{metres}m</span></button>)}</div></fieldset>
       <Button type="submit" disabled={!label.trim()}>{copy.save}</Button>

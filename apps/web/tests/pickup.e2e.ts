@@ -7,6 +7,9 @@ async function chooseSavedPoint(page: Page) {
   await page.getByRole('button', { name: '정문', exact: true }).click();
 }
 
+/** P-04 "지금". The demo also shows tomorrow's open occurrence under "내일" with its own "내가 갈게" (24.7). */
+const nowSection = (page: Page) => page.getByRole('region', { name: '지금' });
+
 test('pickup stays synchronized across rider, guardian, and vehicle', async ({ context }) => {
   const rider = await context.newPage();
   const guardian = await context.newPage();
@@ -18,7 +21,7 @@ test('pickup stays synchronized across rider, guardian, and vehicle', async ({ c
   await expect(rider.getByRole('heading', { name: '데리러 와 달라고 보냈어' })).toBeVisible();
   await expect(guardian.getByRole('heading', { name: '민준이 데리러 와 달래요' })).toBeVisible();
   await expect(vehicle.getByText('수학학원, 후문 주차장, 후문 벤치 앞')).toBeVisible();
-  await guardian.getByRole('button', { name: '내가 갈게' }).click();
+  await nowSection(guardian).getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('dialog').getByRole('button', { name: '내가 갈게' }).click();
   await expect(rider.getByRole('heading', { name: '엄마가 데리러 갈게' })).toBeVisible();
   await guardian.getByRole('button', { name: '넘기기' }).click();
@@ -66,7 +69,7 @@ test('sender can depart while a handoff is pending', async ({ context }) => {
   await Promise.all([rider.goto('/c/'), guardian.goto('/p/')]);
   await chooseSavedPoint(rider);
   await rider.getByRole('button', { name: '데리러 와', exact: true }).click();
-  await guardian.getByRole('button', { name: '내가 갈게' }).click();
+  await nowSection(guardian).getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('dialog').getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('button', { name: '넘기기' }).click();
   await guardian.getByRole('button', { name: '아빠에게 부탁하기' }).click();
@@ -85,7 +88,7 @@ async function handOffToDad(context: import('@playwright/test').BrowserContext) 
   await chooseSavedPoint(rider);
   await rider.getByRole('button', { name: '데리러 와', exact: true }).click();
   await guardian.bringToFront();
-  await guardian.getByRole('button', { name: '내가 갈게' }).click();
+  await nowSection(guardian).getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('dialog').getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('button', { name: '넘기기' }).click();
   await guardian.getByRole('button', { name: '야근이야' }).click();
@@ -196,7 +199,7 @@ test('changing the driver on V-09 moves the cards to the new driver', async ({ c
   await chooseSavedPoint(rider);
   await rider.getByRole('button', { name: '데리러 와', exact: true }).click();
   await guardian.bringToFront();
-  await guardian.getByRole('button', { name: '내가 갈게' }).click();
+  await nowSection(guardian).getByRole('button', { name: '내가 갈게' }).click();
   await guardian.getByRole('dialog').getByRole('button', { name: '내가 갈게' }).click();
   await vehicle.bringToFront();
   // The car belongs to dad, so mom's pickup is not on it.

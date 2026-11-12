@@ -269,6 +269,45 @@
   color: var(--red);
 }
 
+/* 24.5 안내 상자: C-01's number box (amber-soft, 10px radius) with a small label and a large line. */
+.note-box {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 13px 15px;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  text-align: left;
+}
+
+.note-box span {
+  color: #865a0c;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.note-box strong {
+  font-size: clamp(1.25rem, 5.6vw, 1.5rem);
+  font-weight: 830;
+  letter-spacing: -.035em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.rider-declared > p {
+  color: var(--muted);
+}
+
+.rider-declared > .button {
+  width: 100%;
+}
+
+.rider-declared-ack {
+  min-height: 56px;
+  margin-top: 6px;
+  font-size: 1.12rem;
+}
+
 .success-circle {
   display: grid;
   place-items: center;

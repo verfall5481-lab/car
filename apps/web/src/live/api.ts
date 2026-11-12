@@ -119,8 +119,26 @@ export function pickupActionRpc(id: string, action: PickupAction, surface: Surfa
     case 'ready': return ['rider_ready_early', versioned];
     case 'not_met': return ['rider_report_not_met', versioned];
     case 'confirm_location': return ['confirm_location', { ...versioned, p_lat: action.destination.lat, p_lng: action.destination.lng, p_label: action.destination.label, p_place_id: action.destination.placeId }];
+    // 24.6: "못 간다고 알리기" is a guardian's; "알겠어" is the requester's, rider device or guardian, and carries no version.
+    case 'no_driver': return ['declare_no_driver', { ...versioned, p_note: action.note }];
+    case 'ack_fallback': return ['ack_fallback', { p_pickup_id }];
     default: throw new RpcError('FORBIDDEN');
   }
+}
+
+/** `set_unavailable_day` (P-19): the caller's own day, as the family's `YYYY-MM-DD`. */
+export function unavailableDayParams(day: string, unavailable: boolean) {
+  return { p_day: day, p_unavailable: unavailable };
+}
+
+export type PlaceInput = { id?: string; label: string; kind: string; lat: number; lng: number; radiusM: number; fallbackNote: string };
+/**
+ * `upsert_place`. "못 갈 때 안내" is always sent: the trimmed line, or an empty string that clears it (24.6; `null` would
+ * keep the stored one, which this form never means).
+ */
+export function upsertPlaceParams(place: PlaceInput) {
+  return { p_place_id: place.id, p_label: place.label.trim(), p_kind: place.kind, p_lat: place.lat, p_lng: place.lng, p_radius_m: place.radiusM,
+    p_fallback_note: place.fallbackNote.trim() };
 }
 
 export function sameRoleReturn(value: string | null, origin: string) {

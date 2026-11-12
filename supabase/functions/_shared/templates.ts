@@ -4,6 +4,8 @@ import type { PushPayload } from "./providers.ts";
 export type TemplateData = {
   rider_name?: string; place?: string; time?: string; who?: string; from?: string; to?: string;
   note?: string; vehicle?: string; vehicle_id?: string; required_km?: number; range_km?: number;
+  /** 24.4: the line to do instead and who declared that nobody can go. */
+  fallback_note?: string; fallback_by?: string;
 };
 
 function subject(name: string) {
@@ -19,6 +21,7 @@ export function pushPayload(template: string, data: TemplateData, pickupId?: str
   const from = data.from || "가족";
   const to = data.to || who;
   const whenWhere = [time, place].filter(Boolean).join(" ");
+  const fallback = data.fallback_note || "";
   const text: Record<string, [string, string]> = {
     test_push: ["데리러 알림이 연결됐어요", "다음 픽업부터 알림을 받을 수 있어요"],
     child_request_new: [`${subject(rider)} 데리러 와 달래요`, `${whenWhere}. 먼저 수락한 사람이 가요`],
@@ -54,21 +57,31 @@ export function pushPayload(template: string, data: TemplateData, pickupId?: str
     child_assigned: [`${subject(who)} 데리러 간대`, `${place}에서 기다려`],
     child_en_route: [`${subject(who)} 출발했어`, ""],
     child_arrived: [`${subject(who)} 도착했어`, ""],
+    // 24.4 갈 사람이 없을 때.
+    nobody_available: [`${rider} 픽업, 갈 수 있는 사람이 없어요`, `${whenWhere}. 누가 갈지 정하거나 못 간다고 알려 주세요`],
+    no_driver: [`${subject(data.fallback_by || "가족")} ${rider}에게 못 간다고 알렸어요`, `대신 할 일: ${fallback}`],
+    fallback_acknowledged: [`${subject(rider)} 확인했어요`, fallback],
+    fallback_unacked: [`${subject(rider)} 아직 확인하지 않았어요`, "전화로 알려 주세요"],
+    tomorrow_open: [`내일 ${time} ${rider} 픽업, 담당이 없어요`, "누가 갈지 미리 정해 주세요"],
+    tomorrow_nobody: [`내일 ${time} ${rider} 픽업, 담당이 없어요`, "갈 수 있는 사람이 없어요. 미리 정해 주세요"],
   };
   if (!Object.hasOwn(text, template)) return undefined;
   const riderPush = ["child_assigned", "child_en_route", "child_arrived"].includes(template);
   const route = riderPush ? "/c/" : data.vehicle_id ? `/p/vehicles/${data.vehicle_id}` : pickupId ? `/p/pickups/${pickupId}` : "/p/";
   const requireInteraction = ["child_request_new", "child_request_repeat", "taken_over", "pickup_cancelled_urgent", "child_not_met", "closed_unconfirmed_not_met"].includes(template);
-  const urgent = requireInteraction || ["offer_to_you", "offer_to_all", "routine_reminder", "routine_open", "not_departed_assignee", "boarding_check"].includes(template);
+  const urgent = requireInteraction || ["offer_to_you", "offer_to_all", "routine_reminder", "routine_open", "not_departed_assignee", "boarding_check",
+    "nobody_available", "fallback_unacked"].includes(template);
   return { title: text[template][0], body: text[template][1], url: route,
     tag: data.vehicle_id ? `low_range:${data.vehicle_id}` : pickupId ? `pickup:${pickupId}` : template, requireInteraction, urgent };
 }
 
 export function smsText(template: string, data: TemplateData, pickupId?: string): string | undefined {
   if (!pickupId) return undefined;
+  const rider = data.rider_name || "가족";
+  // 24.4: a short message without a link; the guardian is asked to call.
+  if (template === "fallback_unacked_sms") return `[데리러] ${subject(rider)} 못 간다는 안내를 아직 확인하지 않았어요. 전화해 주세요.`;
   const url = appUrl(`/p/pickups/${pickupId}`);
   if (!url) return undefined;
-  const rider = data.rider_name || "가족";
   switch (template) {
     case "esc_sms_open": return `[데리러] ${rider} 픽업 요청을 아직 아무도 수락하지 않았어요 ${url}`;
     case "esc_sms_open_urgent": return `[데리러][긴급] ${rider} 요청 10분째 미수락. 전화해 주세요 ${url}`;

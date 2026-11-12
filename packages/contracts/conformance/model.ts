@@ -45,6 +45,12 @@ export type RoutineSpec = {
   assignee?: string;
   vehicle?: string;
   notifyBeforeMin?: number;
+  /**
+   * Create the occurrence the way the scheduler does: SQL runs `ensure_occurrences` for the family's routines (so every
+   * routine of such a scenario should set it), TS calls `newOccurrencePickup` with the day's unavailable members. Without
+   * it the SQL row is inserted as the spec says.
+   */
+  generate?: boolean;
 };
 
 export type PickupSpec = RequestSpec | RoutineSpec;
@@ -96,7 +102,17 @@ export type ActionSpec =
     dropDay?: boolean; notifyBeforeMin?: number;
   }
   /** A guardian deletes the pickup's routine (`archive_routine`). */
-  | { type: "archive_routine" };
+  | { type: "archive_routine" }
+  /** 24.3 #20, #21 "못 간다고 알리기" (`declare_no_driver`). `note` defaults to "학원 안에서 기다리기". */
+  | { type: "no_driver"; note?: string; version?: Version }
+  /** 24.3 #22 "알겠어" (`ack_fallback`). */
+  | { type: "ack_fallback" }
+  /**
+   * The acting guardian marks (`unavailable`, the default) or clears a 못 가는 날 (`set_unavailable_day`; TS
+   * `setUnavailableDay`, then `reviseForUnavailableDay` for every pickup on that day). The day is the step pickup's date,
+   * or today plus `fromToday`.
+   */
+  | { type: "unavailable_day"; unavailable?: boolean; fromToday?: number };
 
 export type ActionType = ActionSpec["type"];
 
@@ -145,13 +161,22 @@ export type Outcome = {
   active: Record<string, string | null>;
   /** Pickups in the family, to show that an action did not create one. */
   pickupCount: number;
+  /** SQL `cancel_reason`; TS `Pickup.cancelReason`. */
+  cancelReason: string | null;
+  /** "대신 할 일" and who declared that nobody can go (24.3 #20, #21). */
+  fallbackNote: string | null;
+  fallbackBy: string | null;
+  /** The requester pressed "알겠어" (24.3 #22). */
+  fallbackAcked: boolean;
+  /** 24.2 갈 수 있는 운전자 of an open pickup, sorted; `null` for any other status. `[]` is "갈 사람 없음". */
+  available: string[] | null;
   sql?: SqlFacts;
 };
 
 export const comparedFields = [
   "ok", "code", "by", "ignored", "status", "assignee", "vehicle", "version", "round", "wantedInMin", "confirmed",
   "destinationRevision", "customized", "announced", "navSession", "newNavSession", "set", "offer", "resolved", "events",
-  "active", "pickupCount",
+  "active", "pickupCount", "cancelReason", "fallbackNote", "fallbackBy", "fallbackAcked", "available",
 ] as const;
 export type ComparedField = typeof comparedFields[number];
 
@@ -180,6 +205,12 @@ export type Expect = {
   events?: string[];
   active?: Record<string, string | null>;
   pickupCount?: number;
+  cancelReason?: string | null;
+  fallbackNote?: string | null;
+  fallbackBy?: string | null;
+  fallbackAcked?: boolean;
+  /** Compared as a set. */
+  available?: string[] | null;
   /** Checked on the SQL side only. `events` there is for steps whose events are not comparable. */
   sql?: Partial<SqlFacts> & { events?: string[] };
 };
@@ -204,9 +235,14 @@ export type RoleStep = { member: string; canDrive: boolean };
 export type DriverStep = { driver: string; member: string };
 export type Step = ActStep | ClockStep | ParkStep | RoleStep | DriverStep;
 
+/** A 못 가는 날 marked through `set_unavailable_day` before any pickup exists: the date the pickup spec will have. */
+export type UnavailableSpec = { member: string; dayOf: string };
+
 export type Scenario = {
   name: string;
   family?: Partial<FamilySpec>;
+  /** Days marked before the pickups are created. */
+  unavailable?: readonly UnavailableSpec[];
   pickups: readonly PickupSpec[];
   /** Expectations on each pickup right after it is created. */
   created?: Partial<Record<string, Expect>>;

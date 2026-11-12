@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Pickup, PickupEvent, PickupOffer } from '@deriro/contracts';
-import type { DemoState, DemoVehicle, History, Person } from '../demo-domain.ts';
+import type { DemoState, DemoVehicle, History, Person, PickupFacts } from '../demo-domain.ts';
 
 const nullableId = z.string().nullish();
 const timestamp = z.string().refine((value) => Number.isFinite(Date.parse(value)));
@@ -17,7 +17,8 @@ export const riderRow = z.object({
   consent_basis: z.enum(['guardian', 'self']).optional(), location_consented_at: nullableDate, phone_e164: z.string().nullish(), archived_at: nullableDate,
   devices: z.array(deviceRow).optional(), device_count: z.number().int().optional(),
 });
-export const placeRow = z.object({ id: z.string(), family_id: z.string().optional(), label: z.string(), kind: z.string().optional(), lat: z.number(), lng: z.number(), radius_m: z.number().default(50), archived_at: nullableDate });
+export const placeRow = z.object({ id: z.string(), family_id: z.string().optional(), label: z.string(), kind: z.string().optional(), lat: z.number(), lng: z.number(), radius_m: z.number().default(50), archived_at: nullableDate,
+  fallback_note: z.string().nullish() });
 export const pointRow = z.object({ id: z.string(), family_id: z.string().optional(), place_id: z.string(), label: z.string(), lat: z.number(), lng: z.number(), note: z.string().nullish(), archived_at: nullableDate });
 export const vehicleStateRow = z.object({ range_km: z.number().nullish(), fuel_pct: z.number().nullish(), soc_pct: z.number().nullish(), collected_at: nullableDate, is_demo_value: z.boolean().optional(), is_stale: z.boolean().optional() });
 export const vehicleRow = z.object({ id: z.string(), family_id: z.string().optional(), nickname: z.string(), current_driver_member_id: nullableId,
@@ -45,6 +46,12 @@ export const pickupRow = z.object({
   arrived_at: nullableDate, completed_at: nullableDate, cancelled_at: nullableDate, expired_at: nullableDate, closed_unconfirmed_at: nullableDate, updated_at: nullableDate, rider_ready_at: nullableDate, not_met_reported_at: nullableDate,
   can_report_not_met: z.boolean().optional(), can_ready_early: z.boolean().optional(), can_cancel: z.boolean().optional(),
   offer: offerRow.nullish(), offers: z.array(offerRow).optional(), escalation_stage: z.number().optional(),
+  // 24.6: "못 간다고 알리기" and "갈 사람 없음". `no_available_driver`, `unavailable_member_ids` and `place_fallback_note`
+  // come with guardian rows; `nobody_available` and `wait_note` with the rider's.
+  cancel_reason: z.string().nullish(), fallback_note: z.string().nullish(), fallback_by_member_id: nullableId, fallback_ack_at: nullableDate,
+  fallback_by_name: z.string().nullish(), no_available_driver: z.boolean().optional(), nobody_available: z.boolean().optional(),
+  unavailable_member_ids: z.array(z.string()).optional(), place_fallback_note: z.string().nullish(), wait_note: z.string().nullish(),
+  is_customized: z.boolean().optional(), routine_offer_created_at: nullableDate,
 });
 const pickupWithOffer = z.union([pickupRow, z.object({ pickup: pickupRow, offer: offerRow.nullish() }).transform(({ pickup, offer }) => ({ ...pickup, offer }))]);
 const guardianPickupRow = pickupRow.required({ dest_lat: true, dest_lng: true, location_source: true, location_confirmed: true });
@@ -56,7 +63,10 @@ export const overviewSchema = z.object({ family: familyRow, me: memberRow, membe
 }).transform((row) => ({ ...row, devices: row.rider_devices }));
 export const todaySchema = z.object({ active: z.array(guardianPickupRow), timeline: z.array(guardianPickupRow), pending_offers_to_me: z.array(offerRow).default([]), alerts: z.array(alertRow).default([]), server_time: nullableDate,
   notification_failures: z.object({ sms_failed: z.number().int().nonnegative() }).optional(),
+  unavailable_days: z.array(z.object({ member_id: z.string(), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).default([]),
 });
+/** `set_unavailable_day`'s answer: the family's days and the trips the caller still holds on that day (P-19). */
+export const unavailableDaySchema = z.object({ days: z.array(z.object({ member_id: z.string(), day: z.string() })).default([]), held_pickup_ids: z.array(z.string()).default([]) });
 const rangeSummary = z.object({ required_km: z.number().nullish(), range_km: z.number().nullish(), verdict: z.string().optional(), computable: z.number().optional(), total: z.number().optional(), origin_source: z.string().nullish() });
 export const pickupSchema = z.object({ pickup: guardianPickupRow, offers: z.array(offerRow).default([]), events: z.array(eventRow).default([]), assignee: memberRow.nullish(), vehicle: vehicleRow.nullish(), vehicle_state: vehicleStateRow.nullish(), required_km: z.number().nullish(), range: rangeSummary.nullish() });
 export const riderStateSchema = z.object({
@@ -96,7 +106,20 @@ export function mapPickup(row: z.infer<typeof pickupRow>, familyId: string, requ
     destinationRevision: row.destination_revision ?? 1, wantedAt: Date.parse(row.wanted_at), acceptedAt: date(row.accepted_at), arrivedAt: date(row.arrived_at),
     navigation: row.nav_session_id ? { sessionId: row.nav_session_id, actionId: row.last_start_action_id ?? '', destinationRevision: row.nav_destination_revision ?? 1 } : null,
     offer: offer ? mapOffer(offer) : null, readyAt: date(row.rider_ready_at), notMetAt: date(row.not_met_reported_at),
+    customized: row.is_customized, routineOfferAt: date(row.routine_offer_created_at),
+    cancelReason: (row.cancel_reason as Pickup['cancelReason']) ?? null, fallbackNote: row.fallback_note ?? null,
+    fallbackBy: row.fallback_by_member_id ?? null, fallbackAckAt: date(row.fallback_ack_at),
   };
+}
+
+/** The server's own answers for 24장 per pickup, so the screens never recompute them from partial data. */
+export function pickupFacts(rows: z.infer<typeof pickupRow>[]): Record<string, PickupFacts> {
+  return Object.fromEntries(rows.map((row) => [row.id, {
+    unavailable: row.unavailable_member_ids,
+    nobodyAvailable: row.nobody_available ?? row.no_available_driver,
+    waitNote: row.wait_note !== undefined ? row.wait_note : row.place_fallback_note,
+    fallbackByName: row.fallback_by_name,
+  }]));
 }
 
 function mapVehicle(row: VehicleRow, familyId: string): DemoVehicle {
@@ -108,7 +131,8 @@ function mapVehicle(row: VehicleRow, familyId: string): DemoVehicle {
 }
 
 export function toPlaces(rows: z.infer<typeof placeRow>[], familyId: string) {
-  return rows.map((row) => ({ id: row.id, familyId, label: row.label, kind: row.kind ?? 'other', lat: row.lat, lng: row.lng, radiusM: row.radius_m, archivedAt: date(row.archived_at) }));
+  return rows.map((row) => ({ id: row.id, familyId, label: row.label, kind: row.kind ?? 'other', lat: row.lat, lng: row.lng, radiusM: row.radius_m, archivedAt: date(row.archived_at),
+    fallbackNote: row.fallback_note ?? null }));
 }
 function toPoints(rows: z.infer<typeof pointRow>[], familyId: string) {
   return rows.map((row) => ({ id: row.id, familyId, placeId: row.place_id, label: row.label, lat: row.lat, lng: row.lng, note: row.note ?? undefined, archivedAt: date(row.archived_at) }));
@@ -127,7 +151,7 @@ export function terminalTimes(rows: z.infer<typeof pickupRow>[]) {
   }));
 }
 
-const eventKinds: readonly (PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined')[] = ['requested', 'accepted', 'offered', 'offer_accepted', 'offer_declined', 'offer_cancelled', 'offer_expired', 'took_over', 'en_route', 'en_route_undone', 'navigation_requested', 'nav_failed', 'nav_ok', 'request_declined', 'arrived', 'arrival_ignored', 'completed', 'cancelled', 'expired', 'location_confirmed', 'rider_ready', 'not_met_reported', 'closed_unconfirmed', 'routine_reassigned', 'member_reassigned'];
+const eventKinds: readonly (PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined')[] = ['requested', 'accepted', 'offered', 'offer_accepted', 'offer_declined', 'offer_cancelled', 'offer_expired', 'took_over', 'en_route', 'en_route_undone', 'navigation_requested', 'nav_failed', 'nav_ok', 'request_declined', 'arrived', 'arrival_ignored', 'completed', 'cancelled', 'expired', 'location_confirmed', 'rider_ready', 'not_met_reported', 'closed_unconfirmed', 'routine_reassigned', 'member_reassigned', 'no_driver', 'fallback_acknowledged'];
 function mapEvent(event: z.infer<typeof eventRow>, id: string): History | null {
   const kind = event.event_type === 'created' ? 'requested' : eventKinds.find((key) => key === event.event_type);
   return kind ? { pickupId: event.pickup_id ?? id, at: Date.parse(event.created_at), event: kind, actor: event.actor_id ?? 'system' } : null;
@@ -145,9 +169,11 @@ export function guardianState(overview: Overview, today?: Today, detail?: Pickup
     places: toPlaces(overview.places, familyId), points: toPoints(overview.pickup_points, familyId), vehicles, vehicle: vehicles[0] ?? base.vehicle,
     routines: overview.routines.map((row) => ({ id: row.id, requester: row.rider_member_id ? { kind: 'member', id: row.rider_member_id } : { kind: 'rider', id: row.rider_id ?? '' },
       placeId: row.place_id, time: row.time_local.slice(0, 5), days: Array.from({ length: 7 }, (_, index) => index).filter((index) => (row.weekdays & (1 << index)) !== 0),
-      before: row.notify_before_min, enabled: !row.archived_at && (row.is_active ?? row.active ?? true), assigneeId: row.default_assignee_member_id ?? '', vehicleId: row.default_vehicle_id ?? '' })),
+      before: row.notify_before_min, enabled: !row.archived_at && (row.is_active ?? row.active ?? true), assigneeId: row.default_assignee_member_id ?? '', vehicleId: row.default_vehicle_id ?? '',
+      startDate: row.start_date, endDate: row.end_date ?? null })),
     pickups: rows.map((row) => mapPickup(row, familyId, undefined, [...(today?.pending_offers_to_me ?? []), ...(detail?.offers ?? [])])),
     occurrences: Object.fromEntries(rows.filter((row) => row.routine_id).map((row) => [row.id, row.routine_id!])), history,
+    unavailableDays: today?.unavailable_days.map((row) => ({ memberId: row.member_id, day: row.day })) ?? [], pickupFacts: pickupFacts(rows),
   };
 }
 
@@ -167,5 +193,6 @@ export function riderState(data: RiderState, receivedAt = Date.now()): DemoState
       escalation: row.escalation_stage, coordinates: row.dest_lat !== undefined && row.dest_lng !== undefined }])),
     members, riders: [{ id: data.rider.id, familyId, name: data.rider.display_name, kind: data.rider.kind, connected: true }],
     places: toPlaces(data.places, familyId), points: toPoints(data.pickup_points, familyId), pickups: rows.map((row) => mapPickup(row, familyId, data.rider.id)),
+    pickupFacts: pickupFacts(rows),
   };
 }

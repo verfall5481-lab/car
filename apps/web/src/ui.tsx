@@ -34,7 +34,7 @@ const errorCopy: Record<string, string> = {
   VEHICLE_BUSY: copy.busyVehicle, LOCATION_UNCONFIRMED: copy.locationNotConfirmed,
   OFFLINE: copy.carOfflineError, NO_DRIVER: copy.noDriver, ROUTINE_ALREADY: copy.routineAlready,
   CODE_INVALID: copy.pairWrongCode, CODE_EXPIRED: copy.pairCodeExpired, ALREADY_PAIRED: copy.carAlreadyPairedHint,
-  VALIDATION: copy.invalidInput, NOT_FOUND: copy.missing,
+  VALIDATION: copy.invalidInput, NOT_FOUND: copy.missing, PICKUP_EXPIRED: copy.stale,
 };
 
 export function useCommit() {
@@ -73,11 +73,16 @@ export function Badge({ children, tone = 'amber' }: { children: ReactNode; tone?
   return <span className={`badge badge--${tone}`}><span className="badge-dot" aria-hidden="true" />{children}</span>;
 }
 
+/** A pickup's status word; a cancellation by "못 간다고 알리기" reads "못 간다고 알림" (24.5 P-05). */
+export function statusLabel(pickup: Pickup) {
+  return pickup.status === 'cancelled' && pickup.cancelReason === 'no_driver' ? copy.noDriverStatus : copy.statuses[pickup.status];
+}
+
 export function Status({ pickup }: { pickup: Pickup }) {
   const tone = pickup.status === 'open' || pickup.status === 'assigned' ? 'amber' :
     ['en_route', 'arrived', 'completed'].includes(pickup.status) ? 'green' :
     pickup.status === 'cancelled' ? 'neutral' : 'red';
-  return <Badge tone={tone}>{copy.statuses[pickup.status]}</Badge>;
+  return <Badge tone={tone}>{statusLabel(pickup)}</Badge>;
 }
 
 export function DemoNav({ role }: { role: keyof typeof copy.roles }) {
@@ -153,7 +158,7 @@ export function Placeholder({ text }: { text: string }) {
   return <div className="empty"><span><CircleHelp size={23} /></span><p>{text}</p></div>;
 }
 
-export function RadioLine({ name, value, selected, change, label, hint }: { name: string; value: string; selected: string; change: (value: string) => void; label: string; hint?: string }) {
+export function RadioLine({ name, value, selected, change, label, hint }: { name: string; value: string; selected: string; change: (value: string) => void; label: string; hint?: ReactNode }) {
   return <label className="radio-line"><input type="radio" name={name} value={value} checked={selected === value} onChange={() => change(value)} /><span><strong>{label}</strong>{hint && <small>{hint}</small>}</span></label>;
 }
 
@@ -212,6 +217,7 @@ export const eventText: Record<History['event'], string> = {
   cancelled: copy.statuses.cancelled, expired: copy.statuses.expired, location_confirmed: copy.confirmHere,
   rider_ready: copy.routineEarly, not_met_reported: copy.notMetRider, closed_unconfirmed: copy.statuses.closed_unconfirmed,
   routine_reassigned: copy.routineReassigned, member_reassigned: copy.memberReassigned,
+  no_driver: copy.noDriverEvent, fallback_acknowledged: copy.fallbackAckEvent,
 };
 
 export function StepCheck({ done }: { done: boolean }) {

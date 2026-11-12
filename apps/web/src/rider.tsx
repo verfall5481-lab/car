@@ -6,6 +6,9 @@ import type { Coordinates, LocationInput, Pickup, Requester } from '@deriro/cont
 import { clock, copy } from './copy.ts';
 import { changed, destinationLabel, exampleGps, nameOf } from './demo-domain.ts';
 import type { DemoState } from './demo-domain.ts';
+import { fallbackByName, waitNoteFor } from './guardian-view.ts';
+import { NoteBox } from './no-driver.tsx';
+import { declarationTitle, riderView } from './rider-view.ts';
 import { Button, CodeInput, MapPreview, MobileHeader, pinOrigin, Row, Sheet, Status, StepCheck, useClock, useCommit, usePickupAction, usePickupOperations, usePickupRequest, useToast } from './ui.tsx';
 import { browserPosition, locationPermission, reverseAddress, useMapKey } from './live/maps.tsx';
 import { RpcError } from './live/errors.ts';
@@ -43,9 +46,14 @@ export function PinPicker({ choose, close, initial, position }: { choose: (locat
   </Sheet>;
 }
 
+/** The guardians the requester can call: drivers other than themselves, and in live mode only with a valid number. */
+function callable(state: DemoState, requester: Requester) {
+  return state.members.filter((member) => member.canDrive && member.leftAt == null && member.id !== requester.id && (!state.live || (member.phone && /^\+[1-9]\d{6,14}$/.test(member.phone))));
+}
+
 function CallBar({ state, requester, emphasized = false }: { state: DemoState; requester: Requester; emphasized?: boolean }) {
   const toast = useToast();
-  const members = state.members.filter((member) => member.canDrive && member.leftAt == null && member.id !== requester.id && (!state.live || (member.phone && /^\+[1-9]\d{6,14}$/.test(member.phone))));
+  const members = callable(state, requester);
   if (!members.length) return null;
   return <div className={`call-bar${emphasized ? ' call-bar--emphasized' : ''}`}>{members.map((member) => state.live ?
     <a key={member.id} href={`tel:${member.phone}`}><Phone size={17} />{copy.call(member.name)}</a> :
@@ -81,19 +89,14 @@ export function RiderRequest({ state, requester, back }: { state: DemoState; req
   const places = state.places.filter((place) => place.archivedAt == null);
   const points = state.points.filter((point) => point.placeId === placeId && point.archivedAt == null);
   const name = nameOf(state, requester.id);
-  const ownPickups = state.pickups.filter((pickup) => pickup.requester.kind === requester.kind && pickup.requester.id === requester.id);
-  const priority: Record<Pickup['status'], number> = { arrived: 0, en_route: 1, assigned: 2, open: 3, completed: 4, cancelled: 4, expired: 4, closed_unconfirmed: 4 };
-  const scheduled = (pickup: Pickup) => pickup.source === 'routine' && pickup.readyAt == null && (pickup.status === 'open' || pickup.status === 'assigned');
-  const active = ownPickups.filter(isActivePickup).sort((a, b) => Number(scheduled(a)) - Number(scheduled(b)) || priority[a.status] - priority[b.status] || a.wantedAt - b.wantedAt);
-  const latest = ownPickups.filter((item) => !isActivePickup(item)).map((item) => ({ item, at: state.terminalAt?.[item.id] ?? state.history.find((event) => event.pickupId === item.id && ['completed', 'cancelled', 'expired', 'closed_unconfirmed'].includes(event.event))?.at ?? 0 }))
-    .filter(({ item, at }) => now - at < (item.status === 'closed_unconfirmed' ? 600_000 : 60_000)).sort((a, b) => b.at - a.at)[0]?.item;
-  const current = active.find((item) => !different || item.source === 'request') ?? (!different && latest?.id !== dismissed ? latest : undefined);
-  const secondary = active.filter((item) => item.id !== current?.id);
-  const regular = current?.source === 'routine' && current.readyAt == null && (current.status === 'open' || current.status === 'assigned');
+  // C-03 state selection, including 24.5's open_nobody, no_driver and no_driver_acked (rider-view.ts).
+  const view = riderView(state, requester, now, { different, dismissed });
+  const { current, secondary, screen, escalated, callEmphasized, notMetRecent } = view;
+  const regular = screen === 'routine_card';
+  const declared = screen === 'no_driver' || screen === 'no_driver_acked';
   const assignee = current ? nameOf(state, current.assigneeId) : '';
   const capabilities = current ? state.pickupCapabilities?.[current.id] : undefined;
-  const requestedAt = current && state.history.find((event) => event.event === 'requested' && event.pickupId === current.id)?.at;
-  const escalated = current?.status === 'open' && ((capabilities?.escalation ?? 0) > 0 || requestedAt != null && now >= requestedAt + 300_000);
+  const waitNote = current ? waitNoteFor(state, current) : null;
   let location: LocationInput | null = null;
   if (placeMode === 'map') location = mapPin;
   else if (placeMode === 'gps') location = state.live ? gps : exampleGps;
@@ -155,7 +158,7 @@ export function RiderRequest({ state, requester, back }: { state: DemoState; req
   }
 
   const headline = current ? {
-    open: escalated ? copy.riderWaitEscalated : copy.requestSent,
+    open: screen === 'open_nobody' ? copy.nobodyRider : escalated ? copy.riderWaitEscalated : copy.requestSent,
     assigned: copy.acceptRider(assignee), en_route: copy.departedRider(assignee), arrived: copy.arrivedRider(assignee),
     completed: copy.boardedRider, cancelled: copy.requestCancelled, expired: copy.requestExpired, closed_unconfirmed: copy.closedUnconfirmed,
   }[current.status] : '';
@@ -163,8 +166,14 @@ export function RiderRequest({ state, requester, back }: { state: DemoState; req
   const gpsConfirmed = gps ? resolveDestination(places[0]?.familyId ?? '', gps, places)?.confirmed : false;
   const gpsSelected = placeMode === 'gps';
   const destination = current ? destinationLabel(state, current.destination) : '';
-  const notMetRecent = current?.notMetAt != null && now < current.notMetAt + 300_000;
-  const callEmphasized = escalated || notMetRecent || current?.status === 'expired' || current?.status === 'closed_unconfirmed';
+  const headlineDeclared = current && screen === 'no_driver' ? declarationTitle(current, now) : copy.fallbackAckedRider;
+  const declaredBy = current && declared ? fallbackByName(state, current) : '';
+  async function acknowledge() {
+    if (!current) return;
+    const result = await act(current, requester, { type: 'ack_fallback' });
+    // 24.5: "알겠어" sends at once, with a vibration where the device has one; the section announces the new state.
+    if (result.ok) navigator.vibrate?.(200);
+  }
   const countdownPlace = pending && (pending.location.source === 'map_pin' ? pending.location.label :
     pending.location.source === 'gps' ? copy.currentPlace : points.find((point) => point.id === pointId)?.label ?? places.find((place) => place.id === placeId)?.label);
 
@@ -178,12 +187,20 @@ export function RiderRequest({ state, requester, back }: { state: DemoState; req
           <Button variant="amber" disabled={operations?.pending || capabilities?.ready === false} onClick={() => { void act(current, requester, { type: 'ready', expectedVersion: current.version }, copy.earlySent); }}>{copy.routineEarly}</Button>
         </div>
         <Button variant="plain" onClick={() => setDifferent(true)}>{copy.differentPlace}</Button>
+      </section> : current && declared ? <section className="rider-progress rider-declared" aria-live="polite">
+        {screen === 'no_driver_acked' ? <span className="success-circle"><Check size={38} /></span> : <CircleAlert className="rider-status-icon" size={38} />}
+        <h2>{headlineDeclared}</h2>
+        {current.fallbackNote && <NoteBox label={copy.insteadLabel} text={current.fallbackNote} />}
+        {screen === 'no_driver' && declaredBy && <p>{copy.fallbackToldBy(declaredBy)}</p>}
+        {screen === 'no_driver' ? <Button variant="amber" className="rider-declared-ack" disabled={operations?.pending} onClick={() => { void acknowledge(); }}>{copy.ackFallback}</Button> :
+          <Button variant="secondary" onClick={() => setDismissed(current.id)}>{copy.requestAgainShort}</Button>}
       </section> : current ? <section className="rider-progress" aria-live="polite">
         {current.status === 'completed' && <span className="success-circle"><Check size={38} /></span>}
         {callEmphasized && current.status !== 'arrived' && <CircleAlert className="rider-status-icon" size={38} />}
         <h2>{headline}</h2>
         {current.status === 'completed' && <p>{copy.boardedDesc}</p>}
-        {current.status === 'open' && <p>{escalated ? copy.callEscalated : copy.requestWaiting}</p>}
+        {current.status === 'open' && <p>{screen === 'open_nobody' ? copy.nobodyFinding(callable(state, requester).map((member) => member.name)) : escalated ? copy.callEscalated : copy.requestWaiting}</p>}
+        {(screen === 'open_nobody' || screen === 'expired') && waitNote && <NoteBox label={copy.waitNoteLabel} text={waitNote} />}
         {isActivePickup(current) && <p className="rider-destination"><MapPin size={18} />{current.status === 'en_route' ? copy.whereWaiting(destination) : destination}{current.status === 'open' && <span>{current.wantedAt <= now ? copy.dateNow : clock(current.wantedAt)}</span>}</p>}
         {['open', 'assigned', 'en_route', 'arrived', 'completed'].includes(current.status) && <Steps pickup={current} state={state} />}
         {current.status === 'arrived' && <div className="stack">

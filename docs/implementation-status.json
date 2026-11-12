@@ -110,5 +110,32 @@
   ],
   "cleanup": "Temporary loopback PostgreSQL 55432 stopped; existing 5432 service unchanged; demo preview left running",
   "sourceAssets": "29 supplied image boards retained including variants; personal application DOCX excluded",
-  "publication": "Local only; no GitHub push or hosting deployment"
+  "publication": "Local only; no GitHub push or hosting deployment",
+  "v042Addition": {
+    "date": "2026-11-12",
+    "spec": "SPEC.md v0.4.2 section 24: no available driver",
+    "implemented": {
+      "contracts": "no_driver and ack_fallback transitions, available-driver computation, unavailable-day occurrence recompute",
+      "backend": "declare_no_driver, ack_fallback, set_unavailable_day, place fallback note, guardian and rider feed fields, outbox notices with dedupe and revalidation",
+      "web": "Rider C-03 states, guardian P-04 cards and tomorrow section, P-05, P-06, P-08, P-10, P-13, new P-18 sheet and P-19 page, demo and live modes",
+      "vehicle": "No change; a no_driver pickup reaches the car as an ordinary cancellation"
+    },
+    "verification": {
+      "contractsTests": 106,
+      "conformanceScenarios": 64,
+      "pgTap": 2935,
+      "webUnitTests": 51,
+      "chromiumTests": 30,
+      "builds": [
+        "web-demo"
+      ]
+    },
+    "notRun": [
+      "PostgreSQL concurrency suite (no local PostgreSQL on this machine)",
+      "Edge notification templates under Deno (checked with a Node test only)",
+      "Android build and tests (no JDK or Android SDK here; apps/car unchanged, it does not read cancel reasons)",
+      "Real Supabase, pg_cron timers (5 min, 10 min, 20:00), Web Push and SMS delivery"
+    ],
+    "knownLimit": "An occurrence created at the same moment its default driver marks that day can keep the driver (docs/backend-status.md)"
+  }
 }

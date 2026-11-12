@@ -25,7 +25,7 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 | `revoke_rider_device` | device_id | 빈 객체 |
 | `get_family_overview` | | family, me, members, riders, rider_devices, vehicles, places, pickup_points, routines, consents, setup_checklist |
 | `rider_get_state` | | rider, callable_guardians, places, pickup_points, actives, today, server_time |
-| `get_today` | days? | active, timeline, pending_offers_to_me, alerts, notification_failures, server_time |
+| `get_today` | days? | active, timeline, pending_offers_to_me, alerts, notification_failures, unavailable_days, server_time |
 | `get_pickup` | pickup_id | pickup, offers, events, assignee, vehicle, vehicle_state, required_km, range |
 
 `leave_family`와 `remove_member`는 떠나는 보호자가 요청자인 미종료 픽업을 `cancelled`(`cancelled_by_kind=system`)로 닫는다. 그래서 에스컬레이션과 문자가 멈추고, 이미 수락한 사람에게 취소 알림이 간다. 떠나는 보호자가 담당하던 픽업은 owner에게 넘기고, owner가 운전할 수 없으면 다른 운전 가능 보호자에게 넘긴다. 후임은 아직 출발하지 않았으므로 `en_route`·`arrived` 픽업도 `assigned`로 돌아가고 출발·도착 시각과 내비 세션이 지워진다. 이벤트는 `member_reassigned`(이전 상태 포함)이며 새 담당자와 rider에게 알림이 간다. 넘길 사람이 없으면 픽업을 취소한다.
@@ -42,11 +42,12 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 
 | RPC | 인자 | 성공 데이터 |
 |---|---|---|
-| `upsert_place` | label, kind, lat, lng, radius_m?, place_id? | place |
+| `upsert_place` | label, kind, lat, lng, radius_m?, place_id?, fallback_note? | place |
 | `upsert_pickup_point` | place_id, label, lat, lng, note?, pickup_point_id? | pickup_point |
 | `archive_place`, `archive_pickup_point`, `archive_routine` | 해당 ID | 빈 객체 |
 | `upsert_routine` | rider_id 또는 rider_member_id, place_id, weekdays, time_local, notify_before_min?, default_assignee_member_id?, default_vehicle_id?, start_date?, end_date?, pickup_point_id?, routine_id?, active?, cancel_future? | routine |
 | `ensure_occurrences` | days? | created |
+| `set_unavailable_day` | day, unavailable | days, held_pickup_ids |
 | `vehicle_pair_start` | | code, url, expires_at |
 | `vehicle_pair_status` | | paired, vehicle? |
 | `vehicle_pair_confirm` | code, nickname, current_driver_member_id | vehicle |
@@ -79,6 +80,47 @@ RPC 인자명은 `p_`로 시작한다. 성공 응답은 `{ok:true,data:{…}}`, 
 - 열린 요청에 `vehicle_decline`을 부를 때, 아직 거절하지 않은 운전 가능 보호자가 그 차의 운전자뿐이면 요청 제안은 `declined`로 닫힌다(`resolved_by_member_id`=그 운전자). `respond_offer(decline)`과 같은 규칙이다(4.4 #7). 요청 제안에는 보낸 사람이 없으므로 두 경로 모두 거절 알림을 보내지 않는다. 요청은 `open`으로 남고, 거절한 사람도 나중에 직접 수락할 수 있다.
 - `register_push_subscription`은 `endpoint`, `p256dh`, `auth`를 받고 `unregister_push_subscription`은 `endpoint`를 받는다. 다른 계정이 등록한 엔드포인트는 등록하면 `FORBIDDEN`이고, 해지는 자기 구독만 지우며 없어도 성공한다. `enqueue_test_push`는 인자 없이 호출한다.
 - GPS 요청의 "OO동 근처" 라벨은 발송 워커가 비동기로 채운다. 표시용 라벨이라 `version`과 `destination_revision`을 올리지 않으므로, 라벨이 바뀌어도 클라이언트가 가진 `expected_version`은 그대로 유효하다. 가족 피드 변경 알림으로 새 라벨을 다시 읽는다.
+
+## 갈 사람이 없을 때 (SPEC 24장)
+
+| RPC | 인자 | 성공 데이터 |
+|---|---|---|
+| `declare_no_driver` | pickup_id, expected_version, note | pickup |
+| `ack_fallback` | pickup_id | pickup |
+| `set_unavailable_day` | day, unavailable | days, held_pickup_ids |
+
+- `declare_no_driver`는 "못 간다고 알리기"(24.3 20·21번)다. `open` 픽업은 요청자가 아닌 보호자 누구나(운전하지 않는 보호자 포함), `assigned` 픽업은 담당자만 부른다. `note`는 앞뒤 공백(스페이스, 탭, 줄바꿈)을 지운 뒤 1~40자다. 성공하면 픽업은 `cancelled`가 되고 `cancel_reason=no_driver`, `fallback_note`(지운 뒤의 문구), `fallback_by_member_id`, `cancelled_by_kind=guardian`, `is_customized=true`가 기록된다. 대기 제안은 `cancelled`, 이벤트는 `no_driver`이며 `version`이 1 오른다. 루틴 회차를 이렇게 끝내도 루틴은 그대로다.
+- `declare_no_driver` 오류: 차량과 rider 기기는 `FORBIDDEN`이다. 픽업을 읽기 전에 거부하므로 어떤 ID를 넣어도 같은 응답이다(S-64). 요청한 보호자 본인은 `FORBIDDEN`, 버전 불일치는 `STALE_VERSION`(현재 픽업 포함), `en_route`·`arrived`·종료 상태는 `INVALID_STATE`, 다른 보호자가 담당한 `assigned`는 `NOT_ASSIGNEE`, `note` 범위 밖은 `VALIDATION`(`detail.field=note`)이다. 원하는 시각 + 60분이 지난 `open` 픽업은 4.5대로 그 자리에서 `expired`로 바꾸고 `PICKUP_EXPIRED`를 돌려준다. 다른 가족의 픽업은 없는 ID와 같은 `NOT_FOUND`다.
+- `ack_fallback`은 "알겠어"(22번)다. 그 픽업의 요청자, 곧 rider 기기 또는 요청한 보호자만 부른다. `expected_version`은 받지 않는다. 처음 부를 때 `fallback_ack_at`과 이벤트 `fallback_acknowledged`를 남기고, 다시 부르면 바뀐 것 없이 같은 픽업으로 성공한다. `version`은 오르지 않는다. 차량은 `FORBIDDEN`(픽업을 읽기 전), 요청자가 아닌 보호자는 `FORBIDDEN`, 다른 rider의 기기는 `NOT_FOUND`, `cancelled`이면서 `cancel_reason=no_driver`가 아닌 픽업은 `INVALID_STATE`다.
+- `set_unavailable_day`는 호출한 보호자 본인의 "못 가는 날"을 켜거나(`unavailable=true`) 끈다. `day`는 가족 시간대 날짜이며 오늘부터 60일 뒤까지만 받는다. 범위 밖이나 `null`은 `VALIDATION`, `can_drive=false`인 보호자는 `FORBIDDEN`, rider 기기와 차량은 `NOT_GUARDIAN`이다. 같은 값을 다시 보내도 성공한다. `days`는 가족 전체(활성 보호자)의 오늘부터 60일 뒤까지 `[{member_id, day}]`이고, `held_pickup_ids`는 그날 호출한 보호자가 계속 맡고 있는 픽업(`assigned`, `en_route`, `arrived`)이다. P-19의 "이날 맡은 픽업 1건은 그대로예요"에 쓴다.
+- `set_unavailable_day`는 같은 트랜잭션에서 그날의 개별 변경 없는(`is_customized=false`) 미래 루틴 회차를 다시 계산한다. 켜면 호출한 보호자가 담당인 `assigned` 회차가 `open`이 되고(대기 제안 `cancelled`), 끄면 루틴의 기본 담당이 호출한 보호자인 `open` 회차가 다시 그 보호자 담당이 된다. 가족 전체 제안을 이미 만든 회차(`routine_offer_created_at`)는 끌 때 건드리지 않는다. 이벤트는 `routine_reassigned`(`cause`는 `unavailable_day` 또는 `unavailable_day_cleared`, 주체는 호출한 보호자)이고 알림은 없다. 다시 `open`이 된 회차의 알림 시점이 지났으면 다음 스케줄러 실행이 가족 전체 제안과 `routine_open`을 만든다.
+- 회차 생성(`ensure_occurrences`)과 루틴 수정(`upsert_routine`의 재계산)도 기본 담당이 그 날짜에 못 가는 날이면 회차를 `open`으로 둔다. 다른 보호자에게 자동으로 배정하지 않는다.
+- `upsert_place`의 `fallback_note`(못 갈 때 안내)는 생략하거나 `null`이면 현재 값을 유지한다(새 장소는 없음). 빈 문자열이나 공백만 있으면 지운다. 앞뒤 공백을 지운 뒤 40자를 넘으면 `VALIDATION`이다.
+- "갈 수 있는 운전자"는 요청 수신 대상(`can_drive`, 탈퇴하지 않음, 요청자 본인 제외) 중 픽업 날짜(`wanted_at`의 가족 시간대 날짜)가 못 가는 날이 아니고, 픽업의 마지막 제안이 가족 전체 제안(보낸 사람 없음)일 때 그 제안을 거절하지 않은 사람이다(`deriro_private.available_drivers`). "갈 사람 없음"은 `open` 픽업의 이 목록이 비어 있는 상태이며 저장하지 않는다. 공용 상태 머신의 `availableDrivers`, `nobodyAvailable`과 같은 정의다.
+
+피드 필드
+
+- `get_today`의 `active`·`timeline` 줄: 픽업 행의 `cancel_reason`, `fallback_note`, `fallback_by_member_id`, `fallback_ack_at`와 함께 `fallback_by_name`(알린 보호자 호칭), `no_available_driver`(갈 사람 없음), `unavailable_member_ids`(픽업 날짜가 못 가는 날인 활성 보호자, P-06), `place_fallback_note`(목적지 장소의 못 갈 때 안내, P-18 기본값)를 싣는다. 최상위 `unavailable_days`는 오늘부터 14일 동안 가족 활성 보호자의 `[{member_id, day}]`다. 내일 회차("내일" 구역)까지 받으려면 `days=2`로 부른다.
+- `get_pickup`의 `pickup`도 위 줄과 같은 필드를 가진다. `events`에는 `no_driver`(주체 보호자)와 `fallback_acknowledged`(주체 rider 또는 보호자)가 남는다.
+- `get_family_overview`와 `rider_get_state`의 `places`에는 `fallback_note`가 있다.
+- `rider_get_state`의 `actives` 줄: `nobody_available`(갈 사람 없음, `open_nobody`), `wait_note`(목적지 장소의 못 갈 때 안내, 모든 줄), `fallback_by_name`, 그리고 픽업 행의 `cancel_reason`, `fallback_note`, `fallback_by_member_id`, `fallback_ack_at`. `cancelled`·`no_driver` 픽업은 확인 전이면 `max(wanted_at, cancelled_at) + 3시간`까지, 확인 뒤에는 10분 동안 계속 내려 준다. 확인 없이 5분이 지나면 `escalation_stage=1`이다(전화 버튼 강조).
+- `vehicle_get_feed`는 바뀌지 않는다. 카드, `active_trip`, `today`, `nearby_places`에서 새 열을 뺀다. 못 간다고 알린 픽업은 기존 취소처럼 보인다. 픽업 행을 그대로 돌려주는 RPC 응답의 `pickup`에는 차량 RPC를 포함해 새 열 세 개가 함께 실린다(대개 `null`).
+
+알림(24.4)
+
+| 템플릿 | 만드는 때 | 받는 사람 | 채널 | `dedupe_key` | 발송 직전 조건 |
+|---|---|---|---|---|---|
+| `nobody_available` | 요청이 만들어질 때 이미 갈 사람이 없거나, 가족 전체 제안 거절로 갈 사람이 없어진 때 | 보호자 전원(요청한 보호자 제외) | 긴급 푸시 | `na:{pickup}:{member}` | 픽업 `open` |
+| `no_driver` | 이벤트 `no_driver` | 보호자 전원 − 알린 사람 | 정보 푸시 | `no_driver:{event}:{member}` | 픽업 `cancelled` |
+| `fallback_acknowledged` | 이벤트 `fallback_acknowledged` | 보호자 전원(요청한 보호자 제외) | 정보 푸시 | `fallback_acknowledged:{event}:{member}` | 픽업 `cancelled` |
+| `fallback_unacked` | 알린 뒤 5분 미확인(스케줄러) | 보호자 전원(요청한 보호자 제외, 알린 사람 포함) | 긴급 푸시 | `fb5:{pickup}:{member}` | `cancelled`, `fallback_ack_at` 없음 |
+| `fallback_unacked_sms` | 알린 뒤 10분 미확인(스케줄러) | 위 대상 중 문자 수신 동의자 | 문자 | `fb10:{pickup}:{member}` | `cancelled`, `fallback_ack_at` 없음 |
+| `tomorrow_open`, `tomorrow_nobody` | 가족 시간대 20:00 이후 스케줄러, 내일 날짜의 `open` 루틴 회차 | 보호자 전원(요청한 보호자 제외) | 푸시 | `tmr:{pickup}:{member}` | 픽업 `open` |
+
+- `nobody_available`은 픽업마다 한 번이다. 요청 생성과 거절이 같은 `na:` 키를 쓴다. 거절은 폰(`respond_offer`)과 차량(`vehicle_decline`) 모두 해당한다. 못 가는 날을 표시해서 갈 사람이 없어진 경우에는 보내지 않는다.
+- 미확인 재알림은 부르는 사람 화면에 남아 있는 동안(`max(wanted_at, cancelled_at) + 3시간`)만 만든다. 확인되면 아직 대기 중인 단계는 `skipped`가 되고, 워커가 이미 잡은 단계는 `svc_outbox_still_valid`가 `valid=false`를 돌려준다.
+- `tomorrow_nobody`는 그 회차의 갈 수 있는 운전자가 0명일 때, 아니면 `tomorrow_open`이다. 두 템플릿은 같은 `tmr:` 키를 쓰므로 회차마다 하나만 간다. 20:00 뒤에 `open`이 된 회차는 다음 실행에서 보낸다.
+- 푸시·문자 문구는 `supabase/functions/_shared/templates.ts`에 있다. 페이로드에는 기존 필드 외에 `fallback_note`, `fallback_by`(호칭)가 있다.
 
 ## 서비스 역할 전용
 

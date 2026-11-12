@@ -6,9 +6,30 @@ export const clock = (value: number) => timeFormat.format(value);
 export const clockSeconds = (value: number) => secondFormat.format(value);
 export const dateLabel = (value: number) => dateFormat.format(value);
 
+/** The rider's spoken time (24.5): 17:30 is "5시 30분", 18:00 is "6시". */
+export function spokenClock(value: number) {
+  const [hour, minute] = clock(value).split(':').map(Number);
+  return `${hour % 12 || 12}시${minute ? ` ${minute}분` : ''}`;
+}
+
+/** P-19 list date of a `YYYY-MM-DD` family day: "11/14 금". */
+export function shortDay(day: string) {
+  const [year, month, date] = day.split('-').map(Number);
+  return `${month}/${date} ${copy.weekdays[(new Date(Date.UTC(year, month - 1, date)).getUTCDay() + 6) % 7]}`;
+}
+/** P-19 grid label of a `YYYY-MM-DD` family day: "11월 14일 금요일". */
+export const dayLabel = (day: string) => dateLabel(Date.parse(`${day}T12:00:00+09:00`));
+/** P-19 grid weekday of a `YYYY-MM-DD` family day: "금". */
+export const dayWeekday = (day: string) => copy.weekdays[(new Date(`${day}T12:00:00+09:00`).getUTCDay() + 6) % 7];
+
 export function subject(name: string) {
   const last = name.charCodeAt(name.length - 1);
   return name + (last >= 0xac00 && last <= 0xd7a3 && (last - 0xac00) % 28 !== 0 ? '이' : '가');
+}
+
+export function topic(word: string) {
+  const last = word.charCodeAt(word.length - 1);
+  return word + (last >= 0xac00 && last <= 0xd7a3 && (last - 0xac00) % 28 !== 0 ? '은' : '는');
 }
 
 export function direction(name: string) {
@@ -395,6 +416,55 @@ export const copy = {
   declineRequest: '못 가요',
   routineReassigned: '루틴이 바뀌어 담당이 바뀌었어요',
   memberReassigned: '보호자가 바뀌어 담당이 넘어갔어요',
+  noDriverEvent: '못 간다고 알림',
+  fallbackAckEvent: '확인함',
+  // 24장 갈 사람이 없을 때. Rider screens (C-03) speak 반말; guardian screens speak 해요체.
+  nobodyRider: '지금 갈 수 있는 사람이 없어',
+  nobodyFinding: (names: readonly string[]) => names.length ? `${[...names.slice(0, -1), subject(names[names.length - 1])].join(', ')} 방법을 찾고 있어` : '가족이 방법을 찾고 있어',
+  waitNoteLabel: '기다리는 동안',
+  insteadLabel: '대신 이렇게 해 줘',
+  noDriverToday: '오늘은 데리러 못 가',
+  noDriverTomorrow: (time: string) => `내일 ${topic(time)} 데리러 못 가`,
+  noDriverOn: (date: string, time: string) => `${date} ${topic(time)} 데리러 못 가`,
+  fallbackToldBy: (name: string) => `${subject(name)} 알려줬어`,
+  ackFallback: '알겠어',
+  fallbackAckedRider: '알겠다고 전했어',
+  requestAgainShort: '다시 요청',
+  nobodyCardTitle: (name: string) => `${name} 픽업, 갈 사람이 없어요`,
+  nobodyCardHint: '모두 못 간다고 했거나 못 가는 날이에요',
+  declareNoDriver: '못 간다고 알리기',
+  fallbackSent: (name: string) => `${name}에게 못 간다고 알렸어요`,
+  fallbackSentBy: (by: string, name: string) => `${subject(by)} ${name}에게 못 간다고 알렸어요`,
+  fallbackPending: (name: string) => `${name} 확인 전`,
+  fallbackUnacked: (name: string) => `${subject(name)} 아직 확인하지 않았어요`,
+  fallbackAcked: (name: string) => `${subject(name)} 확인했어요`,
+  fallbackNoteWithTime: (note: string, time: string) => `${note} · ${time}`,
+  tomorrow: '내일',
+  tomorrowNoAssignee: '담당이 없어요',
+  tomorrowNobody: '갈 수 있는 사람이 없어요',
+  noDriverStatus: '못 간다고 알림',
+  insteadTitle: '대신 할 일',
+  ackPending: '확인 전',
+  ackAt: (time: string) => `확인 ${time}`,
+  noDriverRecord: (name: string) => `${subject(name)} 못 간다고 알림`,
+  fallbackAckRecord: (name: string) => `${subject(name)} 확인`,
+  noDriverQuestion: (name: string) => `${name}에게 못 간다고 알릴까요?`,
+  placeNoteHint: (place: string) => `${place}에 정해 둔 안내`,
+  fallbackPresets: ['안에서 기다리기', '셔틀 타기', '걸어서 집에 오기', '전화 기다리기'],
+  writeOwn: '직접 쓰기',
+  noDriverInfo: (name: string) => `${subject(name)} 확인하면 알려드려요. 픽업은 여기서 끝나요.`,
+  noDriverSent: (name: string) => `${name}에게 알렸어요`,
+  placeFallbackLabel: '못 갈 때 안내 (선택)',
+  placeFallbackHelp: '아무도 못 갈 때 부르는 사람 화면에 보여 줘요.',
+  unavailableTitle: '못 가는 날',
+  unavailableIntro: '운전하기 어려운 날을 눌러 표시해 두세요. 그날 픽업은 다른 가족에게 먼저 물어봐요.',
+  unavailableOthers: (names: string) => `${names} 못 가는 날`,
+  unavailableNeeds: '갈 사람을 정해야 하는 픽업',
+  unavailableDefault: (name: string) => `기본 담당 ${subject(name)} 못 가는 날`,
+  unavailableHeld: (count: number) => `이날 맡은 픽업 ${count}건은 그대로예요. 필요하면 넘겨 주세요.`,
+  unavailableNoDrive: '운전하지 않는 가족은 표시하지 않아도 돼요',
+  unavailableRow: (day: string, time: string, name: string, place: string) => `${day} ${time} ${name}, ${place}`,
+  routineNoAssigneeThisTime: '이번엔 담당 없음',
   departure: '출발했어요',
   arrival: '도착했어요',
   boarded: '태웠어요',

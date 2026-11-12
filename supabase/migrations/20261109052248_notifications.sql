@@ -11,7 +11,8 @@ returns void language sql set search_path = '' as $$
       'time',to_char(p_pickup.wanted_at at time zone 'Asia/Seoul','HH24:MI'),
       'who',deriro_private.member_name(p_pickup.assignee_member_id),
       'from',deriro_private.member_name(p_offer.from_member_id),'to',deriro_private.member_name(p_offer.to_member_id),
-      'note',p_offer.note),
+      'note',p_offer.note,'fallback_note',p_pickup.fallback_note,
+      'fallback_by',deriro_private.member_name(p_pickup.fallback_by_member_id)),
     p_status,case when p_check_round then p_pickup.assignment_round end,p_offer_status,
     p_audience='drivers',p_key || ':' || coalesce(t.member_id,t.rider_id)::text
   from (
@@ -42,7 +43,18 @@ begin
   end if;
   case new.event_type
     when 'created' then
-      if p.source='request' then perform deriro_private.queue_pickup(p,'child_request_new',key,'drivers',p_status=>'open'); end if;
+      if p.source='request' then
+        perform deriro_private.queue_pickup(p,'child_request_new',key,'drivers',p_status=>'open');
+        -- 24.3, 24.4: a request made when no driver can go tells every guardian at once, without waiting 5 minutes.
+        if cardinality(deriro_private.available_drivers(p))=0 then
+          perform deriro_private.queue_pickup(p,'nobody_available','na:'||p.id,'family',p_status=>'open',p_exclude_member=>p.rider_member_id);
+        end if;
+      end if;
+    when 'no_driver' then
+      -- 24.4: every other guardian hears who said nobody can go and what the requester should do instead.
+      perform deriro_private.queue_pickup(p,'no_driver',key,'family',p_status=>'cancelled',p_exclude_member=>p.fallback_by_member_id);
+    when 'fallback_acknowledged' then
+      perform deriro_private.queue_pickup(p,'fallback_acknowledged',key,'family',p_status=>'cancelled',p_exclude_member=>p.rider_member_id);
     when 'offered' then
       perform deriro_private.queue_pickup(p,case when offer.to_member_id is null then 'offer_to_all' else 'offer_to_you' end,key,
         'drivers',offer.to_member_id,p_status=>'assigned',p_offer=>offer,p_offer_status=>'pending',p_exclude_member=>offer.from_member_id);
@@ -128,6 +140,38 @@ end
 $$;
 create trigger skip_stale_pickup_notifications after update of status,assignee_member_id on public.pickups
   for each row execute function deriro_private.skip_stale_pickup_notifications();
+
+-- 24.3, 24.4: the decline that leaves an open pickup without an available driver tells every guardian once ('na:' key,
+-- shared with the notice at request creation). Phone and car declines both record an offer response.
+create function deriro_private.on_offer_response()
+returns trigger language plpgsql set search_path = '' as $$
+declare
+  p public.pickups;
+begin
+  select x.* into p from public.pickups x join public.pickup_offers o on o.pickup_id=x.id
+    where o.id=new.offer_id and o.from_member_id is null;
+  if found and p.status='open' and cardinality(deriro_private.available_drivers(p))=0 then
+    perform deriro_private.queue_pickup(p,'nobody_available','na:'||p.id,'family',p_status=>'open',p_exclude_member=>p.rider_member_id);
+  end if;
+  return new;
+end
+$$;
+create trigger nobody_available_after_decline after insert on public.offer_responses
+  for each row execute function deriro_private.on_offer_response();
+
+-- 24.4: once the requester has acknowledged, the reminders still waiting are skipped.
+create function deriro_private.skip_acknowledged_fallback()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  if old.fallback_ack_at is null and new.fallback_ack_at is not null then
+    update public.notifications_outbox set status='skipped',finished_at=now()
+      where pickup_id=new.id and status='pending' and template in ('fallback_unacked','fallback_unacked_sms');
+  end if;
+  return new;
+end
+$$;
+create trigger skip_acknowledged_fallback after update of fallback_ack_at on public.pickups
+  for each row execute function deriro_private.skip_acknowledged_fallback();
 
 create function deriro_private.routine_created_event()
 returns trigger language plpgsql set search_path = '' as $$
@@ -303,6 +347,7 @@ begin
             (p.assignment_round<>job.expected_assignment_round or not deriro_private.active_status(p.status)))
           or (job.driver_only and job.recipient_member_id=p.rider_member_id)
           or (p.status='open' and now()>=p.wanted_at+interval '60 minutes')
+          or (job.template in ('fallback_unacked','fallback_unacked_sms') and p.fallback_ack_at is not null)
         then return deriro_private.ok('{"valid":false}'); end if;
       end if;
       if job.offer_id is not null and job.expected_offer_status is not null then
@@ -478,6 +523,36 @@ begin
       end if;
     end if;
   end loop;
+
+  -- 24.4: "못 간다고 알리기" not yet acknowledged. Every guardian gets an urgent push after 5 minutes and an SMS (opted in)
+  -- after 10, once each, while the requester's screen still shows it (max(wanted_at, cancelled_at) + 3 hours).
+  for p in select x.* from public.pickups x join public.families f on f.id=x.family_id
+    where (p_family_id is null or x.family_id=p_family_id) and x.status='cancelled' and x.cancel_reason='no_driver'
+      and x.fallback_ack_at is null and x.cancelled_at<=now()-interval '5 minutes'/f.demo_time_scale
+      and now()<greatest(x.wanted_at,x.cancelled_at)+interval '3 hours'
+    order by x.cancelled_at,x.id limit 500 for update of x skip locked
+  loop
+    select f.demo_time_scale into scale from public.families f where f.id=p.family_id;
+    processed := processed+1;
+    perform deriro_private.queue_pickup(p,'fallback_unacked','fb5:'||p.id,'family',p_status=>'cancelled',p_exclude_member=>p.rider_member_id);
+    if p.cancelled_at<=now()-interval '10 minutes'/scale then
+      perform deriro_private.queue_pickup(p,'fallback_unacked_sms','fb10:'||p.id,'family',p_channel=>'sms',p_status=>'cancelled',
+        p_exclude_member=>p.rider_member_id);
+    end if;
+  end loop;
+
+  -- 24.4 "내일 담당 없음": from 20:00 in the family's time zone, each open routine occurrence of tomorrow is announced
+  -- once. One that becomes open later that evening is announced by the next run.
+  for p in select x.* from public.pickups x join public.families f on f.id=x.family_id
+    where (p_family_id is null or x.family_id=p_family_id) and x.source='routine' and x.status='open'
+      and (x.wanted_at at time zone f.timezone)::date=(now() at time zone f.timezone)::date+1
+      and (now() at time zone f.timezone)::time>='20:00'
+    order by x.wanted_at,x.id limit 500 for update of x skip locked
+  loop
+    processed := processed+1;
+    perform deriro_private.queue_pickup(p,case when cardinality(deriro_private.available_drivers(p))=0 then 'tomorrow_nobody'
+      else 'tomorrow_open' end,'tmr:'||p.id,'family',p_status=>'open',p_exclude_member=>p.rider_member_id);
+  end loop;
   return processed;
 end
 $$;
@@ -503,6 +578,9 @@ begin
   delete from deriro_private.link_codes c where c.expires_at<=now()-interval '7 days';
   delete from deriro_private.rate_limits r where r.resets_at<=now()-interval '1 day';
   delete from deriro_private.sms_reservations r where r.local_day < (now() at time zone 'Asia/Seoul')::date-7;
+  -- 24.2: a "못 가는 날" that has passed in the family's time zone.
+  delete from public.member_unavailable_days u using public.families f
+    where f.id=u.family_id and u.day < (now() at time zone f.timezone)::date;
   update public.vehicle_states set lat=null,lng=null,location_at=null where location_at<=now()-interval '24 hours';
   return jsonb_build_object('pickups_deleted',erased_pickups,'jobs_deleted',erased_jobs);
 end
@@ -522,7 +600,8 @@ $$;
 do $$
 declare relation text;
 begin
-  foreach relation in array array['pickups','pickup_offers','vehicle_alerts','family_members','riders','places','pickup_points','routines','vehicles'] loop
+  foreach relation in array array['pickups','pickup_offers','vehicle_alerts','family_members','riders','places','pickup_points','routines','vehicles',
+    'member_unavailable_days'] loop
     execute format('create trigger dirty_family_feed after insert or update or delete on public.%I
       for each row execute function deriro_private.dirty_family_feed()',relation);
   end loop;
@@ -628,6 +707,8 @@ begin
       delete from public.notifications_outbox where family_id=actor.family_id;
       delete from public.vehicle_alerts where family_id=actor.family_id;
       delete from public.pickups where family_id=actor.family_id;
+      -- 24.7: the demo starts with no "못 가는 날".
+      delete from public.member_unavailable_days where family_id=actor.family_id;
       update public.families set demo_time_scale=1 where id=actor.family_id;
       perform deriro_private.ensure_occurrences(actor.family_id,2);
     else return deriro_private.err('VALIDATION');
@@ -638,6 +719,7 @@ $$;
 
 revoke execute on function deriro_private.queue_pickup(public.pickups,text,text,text,uuid,text,public.pickup_status,boolean,public.pickup_offers,public.offer_status,uuid),
   deriro_private.on_pickup_event(),deriro_private.on_offer_resolved(),deriro_private.routine_created_event(),
+  deriro_private.on_offer_response(),deriro_private.skip_acknowledged_fallback(),
   deriro_private.skip_stale_pickup_notifications(),
   deriro_private.on_range_alert(),deriro_private.push_endpoint_allowed(text),deriro_private.prune_revoked_push(),
   deriro_private.queue_geo_label(),deriro_private.run_escalations(uuid),deriro_private.retention_cleanup(),

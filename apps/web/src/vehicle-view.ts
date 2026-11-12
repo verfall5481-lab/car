@@ -88,6 +88,9 @@ export function vehicleView(state: DemoState, now: number, memory: VehicleMemory
     // The live feed lists only what this car may answer, including declines it already recorded.
     if (server) return Boolean(serverCard(pickup));
     if (!requestRecipients(pickup, state.members, [vehicle]).vehicleIds.includes(vehicle.id)) return false;
+    // As the server's `routine_open`, an open occurrence reaches other drivers' cars only once it was offered to everyone:
+    // tomorrow's occurrences, made ahead (24.7), stay off the car until their notify time.
+    if (pickup.status === 'open' && pickup.source === 'routine' && pickup.routineOfferAt == null) return false;
     return pickup.status === 'open' ? !declinedHere(pickup) : Boolean(receivedOffer(pickup));
   });
   const pending = visible.filter(isActivePickup).sort((a, b) => cardRank(a) - cardRank(b) || cardOrder(a) - cardOrder(b) ||

@@ -58,7 +58,7 @@ insert into fx values
   ('routine', pg_temp.fixture(701), 'A'),
   ('k_open', pg_temp.fixture(801), 'A'), ('k_assigned', pg_temp.fixture(802), 'A'), ('k_arrived_member', pg_temp.fixture(803), 'A'),
   ('k_routine_open', pg_temp.fixture(804), 'A'), ('k_en_route', pg_temp.fixture(805), 'A'),
-  ('k_routine_arrived', pg_temp.fixture(806), 'A'), ('k_b_open', pg_temp.fixture(821), 'B'), ('k_b_assigned', pg_temp.fixture(822), 'B'), ('k_b_taken', pg_temp.fixture(823), 'B'),
+  ('k_routine_arrived', pg_temp.fixture(806), 'A'), ('k_no_driver', pg_temp.fixture(807), 'A'), ('k_b_open', pg_temp.fixture(821), 'B'), ('k_b_assigned', pg_temp.fixture(822), 'B'), ('k_b_taken', pg_temp.fixture(823), 'B'),
   ('k_d_open', pg_temp.fixture(831), 'D'),
   ('offer_open', pg_temp.fixture(901), 'A'), ('offer_handoff', pg_temp.fixture(902), 'A'), ('offer_b', pg_temp.fixture(921), 'B'),
   ('alert', pg_temp.fixture(951), 'A'), ('push_owner', pg_temp.fixture(961), 'A'), ('push_b', pg_temp.fixture(962), 'B'),
@@ -162,6 +162,16 @@ values
   (pg_temp.fixture(823), pg_temp.fixture(2), pg_temp.fixture(323), null, 'request', null, null, 'assigned', pg_temp.fixture(222),
     null, null, 'map_pin', true, 37.5005, 127.0005, '옆집 옆', now() + interval '30 minutes',
     now() - interval '1 minute', null, null, null, null, null, 'none', null);
+-- 24.3 #20: 엄마 said nobody can go to 민준's earlier request; 민준 has not pressed "알겠어" yet.
+insert into public.pickups(id, family_id, rider_id, source, status, location_source, location_confirmed, dest_lat, dest_lng,
+  dest_label, wanted_at, cancelled_at, cancel_reason, cancelled_by_kind, is_customized, fallback_note, fallback_by_member_id)
+values (pg_temp.fixture(807), pg_temp.fixture(1), pg_temp.fixture(301), 'request', 'cancelled', 'map_pin', true, 37.506, 127.006,
+  '학원 앞', now() - interval '30 minutes', now() - interval '2 minutes', 'no_driver', 'guardian', true, '학원 안에서 기다리기',
+  pg_temp.fixture(201));
+-- 24.2 못 가는 날: 아빠 tomorrow in family A, the owner of family B tomorrow.
+insert into public.member_unavailable_days(family_id, member_id, day) values
+  (pg_temp.fixture(1), pg_temp.fixture(202), (now() at time zone 'Asia/Seoul')::date + 1),
+  (pg_temp.fixture(2), pg_temp.fixture(221), (now() at time zone 'Asia/Seoul')::date + 1);
 update public.vehicles set active_pickup_id = pg_temp.fixture(805), active_nav_session_id = pg_temp.fixture(991),
   active_destination_revision = 1 where id = pg_temp.fixture(601);
 insert into public.pickup_offers(id, family_id, pickup_id, origin, from_member_id, to_member_id, status, expires_at) values
@@ -444,13 +454,15 @@ insert into column_grant values
   ('family_members', array['can_drive', 'can_request', 'display_name', 'family_id', 'id', 'left_at', 'role']),
   ('riders', array['archived_at', 'consent_basis', 'display_name', 'family_id', 'id', 'kind']),
   ('vehicles', array['current_driver_member_id', 'family_id', 'id', 'nickname', 'revoked_at']),
-  ('places', array['archived_at', 'family_id', 'id', 'kind', 'label', 'lat', 'lng', 'radius_m']),
+  ('places', array['archived_at', 'fallback_note', 'family_id', 'id', 'kind', 'label', 'lat', 'lng', 'radius_m']),
+  ('member_unavailable_days', array['created_at', 'day', 'family_id', 'member_id']),
   ('pickup_points', array['archived_at', 'family_id', 'id', 'label', 'lat', 'lng', 'note', 'place_id']),
   ('routines', array['active', 'archived_at', 'default_assignee_member_id', 'default_vehicle_id', 'end_date', 'family_id', 'id',
     'notify_before_min', 'pickup_point_id', 'place_id', 'rider_id', 'rider_member_id', 'start_date', 'time_local', 'weekdays']),
   ('pickups', array['accepted_at', 'arrived_at', 'arrived_source', 'assignee_member_id', 'assignment_round', 'cancel_reason',
     'cancelled_at', 'cancelled_by_kind', 'closed_unconfirmed_at', 'completed_at', 'completed_by_kind', 'created_at',
-    'dest_label', 'dest_lat', 'dest_lng', 'destination_revision', 'en_route_at', 'expired_at', 'family_id', 'id',
+    'dest_label', 'dest_lat', 'dest_lng', 'destination_revision', 'en_route_at', 'expired_at', 'fallback_ack_at',
+    'fallback_by_member_id', 'fallback_note', 'family_id', 'id',
     'is_customized', 'location_confirmed', 'location_source', 'nav_status', 'not_met_reported_at', 'occurrence_date',
     'pickup_point_id', 'pin_note', 'place_id', 'rider_id', 'rider_member_id', 'rider_ready_at', 'routine_id', 'source',
     'status', 'updated_at', 'vehicle_id', 'version', 'wanted_at']),
@@ -599,6 +611,9 @@ insert into matrix(ord, label, rpc, template, allowed, cross_who) values
     'public.upsert_routine({a:r_child}, null, {a:place_school}, 31, ''08:00'', p_routine_id => {a:routine})', pg_temp.members(), default),
   (58, 'archive_routine', 'archive_routine', 'public.archive_routine({a:routine})', pg_temp.members(), default),
   (59, 'ensure_occurrences', 'ensure_occurrences', 'public.ensure_occurrences(2)', pg_temp.members(), '{}'),
+  -- 24.3 못 가는 날: a guardian marks their own day; one who cannot drive has nothing to mark.
+  (64, 'set_unavailable_day', 'set_unavailable_day',
+    'public.set_unavailable_day((now() at time zone ''Asia/Seoul'')::date + 2, true)', array['a_owner', 'a_guardian'], '{}'),
   -- Feeds (2.2: 가족 정보 보기 — 아이 기기·차량은 자기 피드만).
   (60, 'get_family_overview', 'get_family_overview', 'public.get_family_overview()', pg_temp.members(), '{}'),
   (61, 'get_today', 'get_today', 'public.get_today(2)', pg_temp.members(), '{}'),
@@ -650,6 +665,13 @@ insert into matrix(ord, label, rpc, template, allowed, cross_who) values
     array['a_rider'], default),
   (100, 'rider_ready_early', 'rider_ready_early', 'public.rider_ready_early({a:k_routine_open}, {v:k_routine_open})',
     array['a_rider'], default),
+  -- 24.3 #20-#22: any guardian but the requester on an open request, only the assignee on an assigned one; the requester
+  -- acknowledges. Cars and rider devices never declare (S-64).
+  (102, 'declare_no_driver(open request)', 'declare_no_driver',
+    'public.declare_no_driver({a:k_open}, {v:k_open}, ''학원 안에서 기다리기'')', pg_temp.members(), default),
+  (103, 'declare_no_driver(own assignment)', 'declare_no_driver',
+    'public.declare_no_driver({a:k_assigned}, {v:k_assigned}, ''셔틀 타기'')', array['a_guardian'], default),
+  (104, 'ack_fallback', 'ack_fallback', 'public.ack_fallback({a:k_no_driver})', array['a_rider'], default),
   (101, 'rider_report_not_met', 'rider_report_not_met',
     'public.rider_report_not_met({a:k_routine_arrived}, {v:k_routine_arrived})', array['a_rider'], default),
   -- Cancelling and location (2.2: 취소 — 아이는 자기 요청만, 차량 X; 위치 확정 — 차량은 주차 중).

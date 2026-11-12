@@ -884,4 +884,251 @@ export const scenarios: readonly Scenario[] = [
       },
     ],
   },
+  // ---- 24 "갈 사람이 없을 때" (v0.4.2): rows 20-22, 갈 수 있는 운전자, 못 가는 날 ------------------------------------------
+  {
+    name: "50. 24.3 #20, S-59: a guardian ends an open request (\"못 간다고 알리기\"); the family offer is withdrawn; " +
+      "S-60: the requester acknowledges once",
+    pickups: [request()],
+    created: { p: { status: "open", available: ["dad", "mom"], cancelReason: null, fallbackNote: null, fallbackAcked: false } },
+    steps: [
+      {
+        actor: "mom", do: { type: "no_driver" },
+        expect: {
+          status: "cancelled", assignee: null, version: 2, customized: true, cancelReason: "no_driver",
+          fallbackNote: "학원 안에서 기다리기", fallbackBy: "mom", fallbackAcked: false, available: null, offer: null,
+          resolved: { from: null, status: "cancelled" }, events: ["no_driver"], sql: { stamps: ["cancelledAt"] },
+        },
+      },
+      { actor: "dad", do: { type: "no_driver" }, expect: { code: "INVALID_STATE", fallbackBy: "mom", events: [] } },
+      { clock: 2 },
+      {
+        actor: "minjun", do: { type: "ack_fallback" },
+        expect: { status: "cancelled", version: 2, fallbackAcked: true, events: ["fallback_acknowledged"] },
+      },
+      { actor: "minjun", do: { type: "ack_fallback" }, expect: { fallbackAcked: true, version: 2, events: [] } },
+      { actor: "mom", do: { type: "ack_fallback" }, expect: { code: "FORBIDDEN", fallbackAcked: true, events: [] } },
+    ],
+  },
+  {
+    name: "51. 24.3 #21, S-62, S-63: on an assigned trip only the assignee says nobody can go, and not once it has departed",
+    pickups: [request()],
+    steps: [
+      { actor: "dad", do: { type: "accept" }, expect: { assignee: "dad", version: 2 } },
+      { actor: "mom", do: { type: "no_driver" }, expect: { code: "NOT_ASSIGNEE", status: "assigned", assignee: "dad", events: [] } },
+      { actor: "dad", do: { type: "depart" }, expect: { status: "en_route", version: 3 } },
+      { actor: "dad", do: { type: "no_driver" }, expect: { code: "INVALID_STATE", status: "en_route", cancelReason: null, events: [] } },
+      { actor: "dad", do: { type: "arrive" }, expect: { status: "arrived" } },
+      { actor: "dad", do: { type: "no_driver" }, expect: { code: "INVALID_STATE", status: "arrived", events: [] } },
+    ],
+  },
+  {
+    name: "52. 24.3 #21, 24.1 #4: the default assignee ends an occurrence with a handoff pending (the note is trimmed); " +
+      "the offer is withdrawn and the occurrence keeps its holder",
+    pickups: [routine({ assignee: "dad", vehicle: "car" })],
+    steps: [
+      { actor: "dad", do: { type: "offer", to: "mom" }, expect: { offer: { from: "dad", to: "mom" }, customized: true } },
+      { actor: "mom", do: { type: "no_driver" }, expect: { code: "NOT_ASSIGNEE", assignee: "dad", offer: { from: "dad", to: "mom" } } },
+      {
+        actor: "dad", do: { type: "no_driver", note: "  셔틀 타기 " },
+        expect: {
+          status: "cancelled", assignee: "dad", vehicle: "car", version: 2, cancelReason: "no_driver", fallbackNote: "셔틀 타기",
+          fallbackBy: "dad", offer: null, resolved: { from: "dad", status: "cancelled" }, events: ["no_driver"], active: { car: null },
+        },
+      },
+      { actor: "mom", do: { type: "respond", response: "accept" }, expect: { code: "OFFER_NOT_PENDING", status: "cancelled" } },
+      { actor: "minjun", do: { type: "ack_fallback" }, expect: { fallbackAcked: true, events: ["fallback_acknowledged"] } },
+    ],
+  },
+  {
+    name: "53. 24.3, S-64: the requester, a car and a rider are FORBIDDEN, a stale version is STALE_VERSION, a note must be " +
+      "1-40 characters; a guardian who cannot drive may still tell the requester",
+    pickups: [request({ by: "mom" })],
+    created: { p: { available: ["dad"] } },
+    steps: [
+      { actor: "mom", do: { type: "no_driver" }, expect: { code: "FORBIDDEN", status: "open", events: [] } },
+      { actor: "car", do: { type: "no_driver" }, expect: { code: "FORBIDDEN", status: "open", events: [] } },
+      { actor: "minjun", do: { type: "no_driver" }, expect: { code: "FORBIDDEN", status: "open", events: [] } },
+      { actor: "dad", do: { type: "no_driver", version: { stale: 1 } }, expect: { code: "STALE_VERSION", status: "open" } },
+      { actor: "dad", do: { type: "no_driver", note: "   " }, expect: { code: "VALIDATION", status: "open" } },
+      { actor: "dad", do: { type: "no_driver", note: "가".repeat(41) }, expect: { code: "VALIDATION", status: "open" } },
+      { actor: "car", do: { type: "ack_fallback" }, expect: { code: "FORBIDDEN", status: "open" } },
+      { actor: "mom", do: { type: "ack_fallback" }, expect: { code: "INVALID_STATE", status: "open" } },
+      {
+        actor: "aunt", do: { type: "no_driver", note: "가".repeat(40) },
+        expect: { status: "cancelled", fallbackBy: "aunt", fallbackNote: "가".repeat(40), events: ["no_driver"] },
+      },
+      { actor: "dad", do: { type: "ack_fallback" }, expect: { code: "FORBIDDEN", fallbackAcked: false } },
+      { actor: "mom", do: { type: "ack_fallback" }, expect: { fallbackAcked: true, events: ["fallback_acknowledged"] } },
+    ],
+  },
+  {
+    name: "54. 24.3 #22: only a no_driver cancellation can be acknowledged; an ordinary cancellation keeps its own reason",
+    pickups: [request()],
+    steps: [
+      { actor: "minjun", do: { type: "ack_fallback" }, expect: { code: "INVALID_STATE", status: "open" } },
+      {
+        actor: "mom", do: { type: "cancel", reason: "resolved_by_phone" },
+        expect: { status: "cancelled", cancelReason: "resolved_by_phone", fallbackNote: null, events: ["cancelled"] },
+      },
+      { actor: "minjun", do: { type: "ack_fallback" }, expect: { code: "INVALID_STATE", fallbackAcked: false } },
+    ],
+  },
+  {
+    name: "55. 4.5: past wanted_at + 60 minutes, \"못 간다고 알리기\" on an open request expires it instead",
+    pickups: [request()],
+    steps: [
+      { clock: 61 },
+      {
+        actor: "mom", do: { type: "no_driver" },
+        expect: {
+          code: "PICKUP_EXPIRED", status: "expired", cancelReason: null, fallbackNote: null,
+          resolved: { from: null, status: "expired" }, events: ["expired"],
+        },
+      },
+    ],
+  },
+  {
+    name: "56. 24.2, S-57: with every driver unavailable today the request is still made and nobody is available; an " +
+      "unavailable driver may still accept",
+    unavailable: [{ member: "mom", dayOf: "p" }, { member: "dad", dayOf: "p" }],
+    pickups: [request()],
+    created: { p: { status: "open", available: [], offer: { from: null, to: null } } },
+    steps: [
+      { actor: "dad", do: { type: "accept" }, expect: { status: "assigned", assignee: "dad", available: null, events: ["accepted"] } },
+    ],
+  },
+  {
+    name: "57. 24.2, S-58: the car's \"못 가요\" from the last available driver leaves nobody while mom cannot drive today; " +
+      "mom may still accept",
+    unavailable: [{ member: "mom", dayOf: "p" }],
+    pickups: [request()],
+    created: { p: { available: ["dad"] } },
+    steps: [
+      {
+        actor: "car", do: { type: "vehicle_decline" },
+        expect: { status: "open", available: [], offer: { from: null, to: null, declinedBy: ["dad"] }, events: ["request_declined"] },
+      },
+      { actor: "mom", do: { type: "accept" }, expect: { status: "assigned", assignee: "mom", available: null } },
+    ],
+  },
+  {
+    name: "58. 24.2: a phone decline of the request offer counts too; a guardian's own request is not theirs to drive",
+    pickups: [request({ by: "mom" })],
+    created: { p: { available: ["dad"] } },
+    steps: [
+      {
+        actor: "dad", do: { type: "respond", response: "decline" },
+        expect: { status: "open", available: [], offer: null, resolved: { from: null, status: "declined", by: "dad" } },
+      },
+      // Nobody is available, so dad tells mom instead.
+      { actor: "dad", do: { type: "no_driver" }, expect: { status: "cancelled", fallbackBy: "dad", available: null } },
+    ],
+  },
+  {
+    name: "59. 24.3 회차 생성, S-65: an occurrence on its default driver's 못 가는 날 is created open and given to nobody; " +
+      "another driver's occurrence that day is assigned as usual",
+    unavailable: [{ member: "dad", dayOf: "a" }],
+    // ensure_occurrences makes every occurrence of the day at once; the TS world creates them one by one.
+    notComparable: { pickupCount: "SQL generates both occurrences when the first is created" },
+    pickups: [
+      routine({ key: "a", assignee: "dad", vehicle: "car", generate: true }),
+      routine({ key: "b", assignee: "mom", generate: true }),
+    ],
+    created: {
+      a: { status: "open", assignee: null, vehicle: null, round: 0, available: ["mom"] },
+      b: { status: "assigned", assignee: "mom", round: 1, available: null },
+    },
+    steps: [
+      { actor: "mom", pickup: "a", do: { type: "accept" }, expect: { assignee: "mom", customized: true, events: ["accepted"] } },
+    ],
+  },
+  {
+    name: "60. 24.3 못 가는 날, S-65, S-66: marking reopens the untouched default assignment (routine_reassigned, no notice); " +
+      "clearing gives it back; an accepted occurrence and another member's day change nothing",
+    pickups: [routine({ key: "a", assignee: "dad", vehicle: "car" }), routine({ key: "b", assignee: "dad", vehicle: "car" })],
+    steps: [
+      { actor: "dad", pickup: "b", do: { type: "accept" }, expect: { assignee: "dad", customized: true } },
+      {
+        actor: "dad", pickup: "a", do: { type: "unavailable_day" },
+        expect: {
+          status: "open", assignee: null, vehicle: null, round: 2, version: 2, customized: false, available: ["mom"],
+          events: ["routine_reassigned"],
+        },
+      },
+      { actor: "dad", pickup: "b", do: { type: "unavailable_day" }, expect: { status: "assigned", assignee: "dad", events: [] } },
+      { actor: "mom", pickup: "a", do: { type: "unavailable_day" }, expect: { status: "open", available: [], events: [] } },
+      { actor: "mom", pickup: "a", do: { type: "unavailable_day", unavailable: false }, expect: { status: "open", events: [] } },
+      {
+        actor: "dad", pickup: "a", do: { type: "unavailable_day", unavailable: false },
+        expect: {
+          status: "assigned", assignee: "dad", vehicle: "car", round: 3, version: 3, available: null,
+          events: ["routine_reassigned"],
+        },
+      },
+      { actor: "dad", pickup: "b", do: { type: "accept" }, expect: { assignee: "dad", events: [] } },
+    ],
+  },
+  {
+    name: "61. 24.3 S-66: clearing leaves an occurrence open once the family-wide offer was made; that offer stays",
+    pickups: [routine({ assignee: "dad", vehicle: "car", wantedInMin: 15 })],
+    steps: [
+      { actor: "dad", do: { type: "unavailable_day" }, expect: { status: "open", events: ["routine_reassigned"] } },
+      {
+        actor: "system", do: { type: "sweep" },
+        expect: { status: "open", announced: true, available: ["mom"], offer: { from: null, to: null } },
+      },
+      {
+        actor: "dad", do: { type: "unavailable_day", unavailable: false },
+        expect: { status: "open", assignee: null, available: ["dad", "mom"], offer: { from: null, to: null }, events: [] },
+      },
+      { actor: "dad", do: { type: "respond", response: "accept" }, expect: { assignee: "dad", events: ["offer_accepted"] } },
+    ],
+  },
+  {
+    name: "62. 24.3: a routine edit on its new default driver's 못 가는 날 leaves the occurrence open; clearing the day " +
+      "then gives it to that driver",
+    pickups: [routine()],
+    steps: [
+      { actor: "dad", do: { type: "unavailable_day" }, expect: { status: "open", events: [] } },
+      {
+        actor: "mom", do: { type: "edit_routine", assignee: "dad", vehicle: "car" },
+        expect: { status: "open", assignee: null, version: 1, events: [] },
+      },
+      {
+        actor: "dad", do: { type: "unavailable_day", unavailable: false },
+        expect: { status: "assigned", assignee: "dad", vehicle: "car", round: 1, events: ["routine_reassigned"] },
+      },
+      { actor: "dad", do: { type: "unavailable_day" }, expect: { status: "open", round: 2, events: ["routine_reassigned"] } },
+    ],
+  },
+  {
+    name: "63. set_unavailable_day: from today to 60 days ahead only, and only for a guardian who can drive",
+    pickups: [routine({ assignee: "dad", vehicle: "car" })],
+    steps: [
+      { actor: "dad", do: { type: "unavailable_day", fromToday: 61 }, expect: { code: "VALIDATION", assignee: "dad" } },
+      { actor: "dad", do: { type: "unavailable_day", fromToday: -1 }, expect: { code: "VALIDATION", assignee: "dad" } },
+      { actor: "aunt", do: { type: "unavailable_day" }, expect: { code: "FORBIDDEN", assignee: "dad" } },
+      { actor: "dad", do: { type: "unavailable_day", fromToday: 60 }, expect: { status: "assigned", assignee: "dad", events: [] } },
+      { actor: "dad", do: { type: "unavailable_day", fromToday: 1 }, expect: { status: "assigned", assignee: "dad", events: [] } },
+      { actor: "dad", do: { type: "unavailable_day", fromToday: 0 }, expect: { status: "open", events: ["routine_reassigned"] } },
+    ],
+  },
+  {
+    name: "64. 24.3 #20: \"못 간다고 알리기\" on an announced open occurrence withdraws its family offer; the scheduler then " +
+      "leaves it alone",
+    pickups: [routine({ wantedInMin: 15 })],
+    steps: [
+      { actor: "system", do: { type: "sweep" }, expect: { announced: true, offer: { from: null, to: null } } },
+      {
+        actor: "dad", do: { type: "no_driver", note: "전화 기다리기" },
+        expect: {
+          status: "cancelled", fallbackNote: "전화 기다리기", offer: null, resolved: { from: null, status: "cancelled" },
+          events: ["no_driver"],
+        },
+      },
+      { clock: 20 },
+      { actor: "system", do: { type: "sweep" }, expect: { status: "cancelled", events: [] } },
+      { actor: "minjun", do: { type: "ack_fallback" }, expect: { fallbackAcked: true, events: ["fallback_acknowledged"] } },
+    ],
+  },
 ];

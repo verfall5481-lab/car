@@ -211,7 +211,8 @@ test('every simulated vehicle state is uploaded as a demo value', () => {
       assert.equal(params.p_is_demo_value, true);
       assert.equal(params.p_gear, parked ? 'P' : 'D');
       assert.equal(params.p_range_km, rangeKm);
-      assert.equal(params.p_collected_at, feed.server_time.replace('+00:00', 'Z'));
+      // The same instant as the feed's server time; PostgreSQL drops trailing zeros of the milliseconds ("...07.16+00:00").
+      assert.equal(params.p_collected_at, new Date(feed.server_time).toISOString());
     }
   }
 });

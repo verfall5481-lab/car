@@ -2,159 +2,161 @@
   "ok": true,
   "data": {
     "me": {
-      "id": "aca92667-c514-49f4-a3dd-409612dfc47c",
+      "id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712",
       "role": "owner",
       "left_at": null,
       "can_drive": true,
-      "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+      "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
       "phone_e164": "+821000000001",
       "sms_opt_in": true,
       "can_request": true,
       "display_name": "엄마",
-      "location_consented_at": "2026-11-09T05:57:45.586+00:00"
+      "location_consented_at": "2026-11-12T04:52:07.16+00:00"
     },
     "family": {
-      "id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+      "id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
       "name": "테스트 가족",
       "is_demo": false,
       "timezone": "Asia/Seoul",
-      "created_at": "2026-11-09T05:57:45.586+00:00",
+      "created_at": "2026-11-12T04:52:07.16+00:00",
       "demo_time_scale": 1
     },
     "places": [
       {
-        "id": "fdf86f4e-f870-40b3-8edf-84cb6a3463a0",
+        "id": "d7f68c42-80ae-4b6c-a8e5-cc624ad029c4",
         "lat": 37.5,
         "lng": 127,
         "kind": "home",
         "label": "집",
         "radius_m": 150,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
-        "archived_at": null
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
+        "archived_at": null,
+        "fallback_note": null
       },
       {
-        "id": "a2225302-efe6-4232-82cc-43631eecca5b",
+        "id": "3ea16ae3-5c36-4488-8b0b-c7e05f1a8056",
         "lat": 37.55,
         "lng": 127.1,
         "kind": "academy",
         "label": "수학학원",
         "radius_m": 150,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
-        "archived_at": null
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
+        "archived_at": null,
+        "fallback_note": null
       }
     ],
     "riders": [
       {
-        "id": "8a4bdbb2-f77e-4d9e-b394-c3f4ab528dc8",
+        "id": "5ff8e0d2-c518-4269-aa97-80a1f9f959a3",
         "kind": "child",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "birth_year": 2018,
         "phone_e164": null,
         "archived_at": null,
         "display_name": "민준",
         "consent_basis": "guardian",
-        "location_consented_at": "2026-11-09T05:57:45.586+00:00"
+        "location_consented_at": "2026-11-12T04:52:07.16+00:00"
       },
       {
-        "id": "3915c169-9a90-4faa-9aaa-cdd90e168756",
+        "id": "c59116a1-cb3a-44b7-a8ce-43fec6989128",
         "kind": "adult",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "birth_year": null,
         "phone_e164": null,
         "archived_at": null,
         "display_name": "할머니",
         "consent_basis": "self",
-        "location_consented_at": "2026-11-09T05:57:45.586+00:00"
+        "location_consented_at": "2026-11-12T04:52:07.16+00:00"
       }
     ],
     "members": [
       {
-        "id": "aca92667-c514-49f4-a3dd-409612dfc47c",
+        "id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712",
         "role": "owner",
         "left_at": null,
         "can_drive": true,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "can_request": true,
         "display_name": "엄마"
       },
       {
-        "id": "f9c12593-33e2-438e-af18-e9d9f5f3a981",
+        "id": "3a73021e-ceb6-42a5-bac7-1b9546f981a7",
         "role": "guardian",
         "left_at": null,
         "can_drive": true,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "can_request": true,
         "display_name": "아빠"
       }
     ],
     "consents": [
       {
-        "id": "5693c42e-c325-4f10-9194-9ae11b9511be",
+        "id": "bcff8ef8-11a3-419a-a165-b0ed7661db6f",
         "purpose": "privacy",
         "version": "test-policy-v1",
         "rider_id": null,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
-        "member_id": "aca92667-c514-49f4-a3dd-409612dfc47c",
-        "granted_at": "2026-11-09T05:57:45.586+00:00",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
+        "member_id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712",
+        "granted_at": "2026-11-12T04:52:07.16+00:00",
         "granted_by_rider_id": null,
-        "granted_by_member_id": "aca92667-c514-49f4-a3dd-409612dfc47c"
+        "granted_by_member_id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712"
       },
       {
-        "id": "4df0fd22-1a59-46e1-991b-5983fffc17a5",
+        "id": "acb0e096-2de9-4bce-ba92-a877a966f6bf",
         "purpose": "member_location",
         "version": "test-policy-v1",
         "rider_id": null,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
-        "member_id": "aca92667-c514-49f4-a3dd-409612dfc47c",
-        "granted_at": "2026-11-09T05:57:45.586+00:00",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
+        "member_id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712",
+        "granted_at": "2026-11-12T04:52:07.16+00:00",
         "granted_by_rider_id": null,
-        "granted_by_member_id": "aca92667-c514-49f4-a3dd-409612dfc47c"
+        "granted_by_member_id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712"
       },
       {
-        "id": "4a6c8b0f-b522-4045-9db7-c22abec27615",
+        "id": "81a2b29a-d761-4e95-ba0b-d667958abebb",
         "purpose": "rider_location",
         "version": "test-policy-v1",
-        "rider_id": "8a4bdbb2-f77e-4d9e-b394-c3f4ab528dc8",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "rider_id": "5ff8e0d2-c518-4269-aa97-80a1f9f959a3",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "member_id": null,
-        "granted_at": "2026-11-09T05:57:45.586+00:00",
+        "granted_at": "2026-11-12T04:52:07.16+00:00",
         "granted_by_rider_id": null,
-        "granted_by_member_id": "aca92667-c514-49f4-a3dd-409612dfc47c"
+        "granted_by_member_id": "1a79b2ba-3538-4a88-b8c5-43c9d289f712"
       },
       {
-        "id": "9f3556d4-f8ed-412c-8e25-fb350b91eec8",
+        "id": "e84cb210-f6a8-4893-9e99-49fc10e03727",
         "purpose": "rider_location",
         "version": "test-policy-v1",
-        "rider_id": "3915c169-9a90-4faa-9aaa-cdd90e168756",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "rider_id": "c59116a1-cb3a-44b7-a8ce-43fec6989128",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "member_id": null,
-        "granted_at": "2026-11-09T05:57:45.586+00:00",
-        "granted_by_rider_id": "3915c169-9a90-4faa-9aaa-cdd90e168756",
+        "granted_at": "2026-11-12T04:52:07.16+00:00",
+        "granted_by_rider_id": "c59116a1-cb3a-44b7-a8ce-43fec6989128",
         "granted_by_member_id": null
       }
     ],
     "routines": [
       {
-        "id": "50827ef5-8400-4588-b8aa-ce10a87865a7",
+        "id": "d2320964-78af-4a03-8b47-5f8ff39f32e3",
         "active": true,
         "end_date": null,
-        "place_id": "a2225302-efe6-4232-82cc-43631eecca5b",
-        "rider_id": "8a4bdbb2-f77e-4d9e-b394-c3f4ab528dc8",
+        "place_id": "3ea16ae3-5c36-4488-8b0b-c7e05f1a8056",
+        "rider_id": "5ff8e0d2-c518-4269-aa97-80a1f9f959a3",
         "weekdays": 127,
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
-        "start_date": "2026-11-10",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
+        "start_date": "2026-11-13",
         "time_local": "17:30:00",
         "archived_at": null,
         "pickup_point_id": null,
         "rider_member_id": null,
         "notify_before_min": 20,
-        "default_vehicle_id": "f001f39e-dac7-4060-ae81-5f11254e9e55",
-        "default_assignee_member_id": "f9c12593-33e2-438e-af18-e9d9f5f3a981"
+        "default_vehicle_id": "7fd8b3e3-3687-493b-a4bd-790cdb5106e2",
+        "default_assignee_member_id": "3a73021e-ceb6-42a5-bac7-1b9546f981a7"
       }
     ],
     "vehicles": [
       {
-        "id": "f001f39e-dac7-4060-ae81-5f11254e9e55",
+        "id": "7fd8b3e3-3687-493b-a4bd-790cdb5106e2",
         "range": {
           "total": 1,
           "verdict": "low",
@@ -162,7 +164,7 @@
           "range_km": 5,
           "computable": 1,
           "pickup_ids": [
-            "22870913-2cc2-4862-8731-055ce7090a30"
+            "7059050a-ea83-415c-9832-3ba5298831cd"
           ],
           "required_km": 27.1,
           "is_demo_value": true,
@@ -175,48 +177,48 @@
           "ignition": "on",
           "is_stale": false,
           "range_km": 5,
-          "vehicle_id": "f001f39e-dac7-4060-ae81-5f11254e9e55",
+          "vehicle_id": "7fd8b3e3-3687-493b-a4bd-790cdb5106e2",
           "energy_type": "bev",
-          "collected_at": "2026-11-09T05:57:45.586+00:00",
+          "collected_at": "2026-11-12T04:52:07.16+00:00",
           "is_demo_value": true
         },
         "nickname": "우리 차",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "revoked_at": null,
         "active_pickup_id": null,
         "active_nav_session_id": null,
-        "current_driver_member_id": "f9c12593-33e2-438e-af18-e9d9f5f3a981",
+        "current_driver_member_id": "3a73021e-ceb6-42a5-bac7-1b9546f981a7",
         "active_destination_revision": null
       }
     ],
     "pickup_points": [
       {
-        "id": "64f6d06d-8e2b-403b-b9ce-198e89cb6705",
+        "id": "a75d78e9-1134-410b-a27d-42e4b18db873",
         "lat": 37.5501,
         "lng": 127.1,
         "note": "후문 벤치",
         "label": "후문",
-        "place_id": "a2225302-efe6-4232-82cc-43631eecca5b",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "place_id": "3ea16ae3-5c36-4488-8b0b-c7e05f1a8056",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "archived_at": null
       }
     ],
     "rider_devices": [
       {
-        "id": "21aea319-4d8d-47b8-8d1c-3b8ea13cfbe2",
-        "rider_id": "3915c169-9a90-4faa-9aaa-cdd90e168756",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "id": "edc87135-7b92-492b-a880-e7b502aa1d5f",
+        "rider_id": "c59116a1-cb3a-44b7-a8ce-43fec6989128",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "revoked_at": null,
         "user_agent": "fixture browser",
-        "last_seen_at": "2026-11-09T05:57:45.586+00:00"
+        "last_seen_at": "2026-11-12T04:52:07.16+00:00"
       },
       {
-        "id": "6917d593-f061-4447-a2a6-3f8780c3764b",
-        "rider_id": "8a4bdbb2-f77e-4d9e-b394-c3f4ab528dc8",
-        "family_id": "fa57fe4c-79ae-4736-944c-19e1abc19b04",
+        "id": "1561ceef-4049-4272-bd5d-f0e9f8a25e8b",
+        "rider_id": "5ff8e0d2-c518-4269-aa97-80a1f9f959a3",
+        "family_id": "0540acbe-cadf-4d66-bf33-3aa28f50d67d",
         "revoked_at": null,
         "user_agent": null,
-        "last_seen_at": "2026-11-09T05:57:45.586+00:00"
+        "last_seen_at": "2026-11-12T04:52:07.16+00:00"
       }
     ],
     "setup_checklist": {

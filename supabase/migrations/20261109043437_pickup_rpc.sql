@@ -255,6 +255,28 @@ as $$
     and not exists (select 1 from public.offer_responses r where r.offer_id = p_offer.id and r.member_id = m.id))
 $$;
 
+-- 24.2 "갈 수 있는 운전자": the request recipients (23.3) who did not mark the pickup's date (wanted_at in the family's time
+-- zone) as a day they cannot drive and did not decline its family-wide offer, which is the pickup's latest offer when that
+-- offer has no sender. "갈 사람 없음" is an open pickup whose list is empty; it is computed, never stored.
+create function deriro_private.available_drivers(p_pickup public.pickups)
+returns uuid[] language sql stable set search_path = ''
+as $$
+  select coalesce(array_agg(m.id order by m.id), '{}') from public.family_members m
+  where m.family_id = p_pickup.family_id and m.left_at is null and m.can_drive
+    and m.id is distinct from p_pickup.rider_member_id
+    and not exists (select 1 from public.member_unavailable_days u join public.families f on f.id = u.family_id
+      where u.member_id = m.id and u.day = (p_pickup.wanted_at at time zone f.timezone)::date)
+    and not exists (select 1 from (select o.id, o.from_member_id from public.pickup_offers o where o.pickup_id = p_pickup.id
+        order by o.created_at desc, o.id desc limit 1) latest
+      join public.offer_responses r on r.offer_id = latest.id
+      where latest.from_member_id is null and r.member_id = m.id)
+$$;
+
+-- A "대신 할 일" or "못 갈 때 안내" line with surrounding whitespace removed, as the shared machine trims it.
+create function deriro_private.trim_note(p_note text)
+returns text language sql immutable set search_path = ''
+as $$ select regexp_replace(p_note, '^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$', '', 'g') $$;
+
 create function deriro_private.expire_pickup(p_pickup public.pickups)
 returns public.pickups language plpgsql set search_path = ''
 as $$
@@ -320,6 +342,11 @@ begin
       then return deriro_private.err('DEVICE_REVOKED'); end if;
     if exists(select 1 from public.vehicles v where v.auth_user_id=auth.uid() and v.revoked_at is not null)
       then return deriro_private.err('VEHICLE_REVOKED'); end if;
+    return deriro_private.err('FORBIDDEN');
+  end if;
+  -- 24.3: only a guardian says that nobody can go, and a car never answers for the requester (24.1 #5). Refused before
+  -- the pickup is read, so every pickup ID gets the same answer.
+  if (p_action = 'no_driver' and actor.kind <> 'member') or (p_action = 'ack_fallback' and actor.kind = 'vehicle') then
     return deriro_private.err('FORBIDDEN');
   end if;
   if p_action in ('rider_cancel','rider_board') then
@@ -395,7 +422,7 @@ begin
     and (offer_id is null or exists(select 1 from public.pickup_offers o
       where o.id = offer_id and o.pickup_id = pickup.id and o.from_member_id is null));
   if p_action <> 'accept' and not lost_race and not (p_action = 'arrive' and arrival_source is not distinct from 'nav_callback')
-    and p_action <> 'nav_result' and pickup.version is distinct from p_expected_version
+    and p_action not in ('nav_result', 'ack_fallback') and pickup.version is distinct from p_expected_version
   then return deriro_private.err('STALE_VERSION', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup))); end if;
 
   case p_action
@@ -652,6 +679,38 @@ begin
         where id = pickup.id returning * into pickup;
       event_type := 'cancelled';
 
+    when 'no_driver' then
+      -- 24.3 #20, #21 "못 간다고 알리기". A guardian other than the requester ends an open pickup; an assigned one only its
+      -- assignee ends (the assignee keeps the trip until someone accepts it, 24.1 #4). The pending offer is withdrawn,
+      -- and the no_driver event queues the 24.4 notices. A departed trip uses the ordinary cancel (F-14).
+      if is_requester then return deriro_private.err('FORBIDDEN'); end if;
+      if pickup.status = 'open' and now() >= pickup.wanted_at + interval '60 minutes' then
+        pickup := deriro_private.expire_pickup(pickup);
+        return deriro_private.err('PICKUP_EXPIRED', jsonb_build_object('pickup', deriro_private.safe_pickup(pickup)));
+      end if;
+      if pickup.status not in ('open', 'assigned') then return deriro_private.err('INVALID_STATE'); end if;
+      if pickup.status = 'assigned' and not is_assignee then return deriro_private.err('NOT_ASSIGNEE'); end if;
+      note := deriro_private.trim_note(note);
+      if note is null or char_length(note) not between 1 and 40 then
+        return deriro_private.err('VALIDATION', '{"field":"note"}');
+      end if;
+      perform deriro_private.resolve_offer(offer.id, 'cancelled');
+      update public.pickups set status = 'cancelled', cancelled_at = now(), cancel_reason = 'no_driver', is_customized = true,
+        cancelled_by_kind = 'guardian', fallback_note = note, fallback_by_member_id = actor.member_id
+        where id = pickup.id returning * into pickup;
+      event_type := 'no_driver';
+
+    when 'ack_fallback' then
+      -- 24.3 #22 "알겠어": the requester (rider device or requesting guardian) acknowledges a no_driver cancellation. The
+      -- first press is recorded; a repeat succeeds and keeps that time and event. Not a version change (4.5).
+      if not is_requester then return deriro_private.err('FORBIDDEN'); end if;
+      if pickup.status <> 'cancelled' or pickup.cancel_reason is distinct from 'no_driver' then
+        return deriro_private.err('INVALID_STATE');
+      end if;
+      if pickup.fallback_ack_at is not null then return deriro_private.pickup_result(pickup); end if;
+      update public.pickups set fallback_ack_at = now() where id = pickup.id returning * into pickup;
+      event_type := 'fallback_acknowledged';
+
     when 'confirm_location' then
       if actor.kind <> 'member' and (actor.kind <> 'vehicle' or not is_driver or not parked) then
         return deriro_private.err('FORBIDDEN');
@@ -795,6 +854,16 @@ returns jsonb language sql security invoker set search_path = ''
 as $$ select deriro_private.transition('not_met', p_pickup_id, p_expected_version,
     '{}') $$;
 
+create function public.declare_no_driver(p_pickup_id uuid, p_expected_version int, p_note text)
+returns jsonb language sql security invoker set search_path = ''
+as $$ select deriro_private.transition('no_driver', p_pickup_id, p_expected_version,
+    jsonb_build_object('note', p_note)) $$;
+
+create function public.ack_fallback(p_pickup_id uuid)
+returns jsonb language sql security invoker set search_path = ''
+as $$ select deriro_private.transition('ack_fallback', p_pickup_id, null,
+    '{}') $$;
+
 -- Revoke privileges on these objects explicitly for projects with legacy default grants.
 revoke execute on all functions in schema deriro_private from public, anon, authenticated, service_role;
 grant execute on function deriro_private.member_family(), deriro_private.member_id(boolean) to authenticated;
@@ -816,7 +885,9 @@ revoke execute on function
   public.cancel_pickup(uuid, int, text),
   public.confirm_location(uuid, int, double precision, double precision, text, uuid),
   public.rider_ready_early(uuid, int),
-  public.rider_report_not_met(uuid, int)
+  public.rider_report_not_met(uuid, int),
+  public.declare_no_driver(uuid, int, text),
+  public.ack_fallback(uuid)
   from public, anon, authenticated, service_role;
 grant execute on function
   deriro_private.create_request(text, int, uuid, uuid, jsonb, jsonb),
@@ -836,5 +907,7 @@ grant execute on function
   public.cancel_pickup(uuid, int, text),
   public.confirm_location(uuid, int, double precision, double precision, text, uuid),
   public.rider_ready_early(uuid, int),
-  public.rider_report_not_met(uuid, int)
+  public.rider_report_not_met(uuid, int),
+  public.declare_no_driver(uuid, int, text),
+  public.ack_fallback(uuid)
   to authenticated;

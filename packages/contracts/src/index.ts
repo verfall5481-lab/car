@@ -56,6 +56,23 @@ export type Vehicle = {
   activeDestinationRevision?: number | null;
 };
 export type Requester = { kind: "rider" | "member"; id: string };
+/**
+ * SQL `cancel_reason`. `no_driver` is "못 간다고 알리기" (24.3 #20, #21); `child_cancelled` is a rider's own cancellation;
+ * `routine_archived` is the system closing an occurrence its routine no longer has.
+ */
+export type CancelReason =
+  | "cancelled"
+  | "skipped"
+  | "not_met"
+  | "resolved_by_phone"
+  | "mistake"
+  | "other_way_home"
+  | "other"
+  | "routine_archived"
+  | "child_cancelled"
+  | "no_driver";
+/** A day a guardian cannot drive (24.2 못 가는 날): `day` is `YYYY-MM-DD` in the family's time zone. */
+export type UnavailableDay = { memberId: string; day: string };
 export type PickupOffer = {
   id: string;
   status: OfferStatus;
@@ -92,6 +109,14 @@ export type Pickup = {
   customized?: boolean;
   /** SQL `routine_offer_created_at`: an open occurrence is offered to every driver once (4.4 #4, F-21, A.4). */
   routineOfferAt?: number | null;
+  /** SQL `cancel_reason`, set when the pickup is cancelled. */
+  cancelReason?: CancelReason | null;
+  /** "대신 할 일" (24.2): the line a guardian attached to "못 간다고 알리기", trimmed, 1-40 characters. */
+  fallbackNote?: string | null;
+  /** SQL `fallback_by_member_id`: the guardian who declared that nobody can go. */
+  fallbackBy?: string | null;
+  /** SQL `fallback_ack_at`: when the requester first pressed "알겠어" (24.3 #22). */
+  fallbackAckAt?: number | null;
 };
 
 export type Actor =
@@ -114,6 +139,10 @@ export type PickupAction =
   | (Versioned & { type: "cancel"; reason?: "not_met" | "cancelled" | "skipped" | "phone_resolved" | "misclick" |
     "other_transport" | "resolved_by_phone" | "mistake" | "other_way_home" | "other" })
   | (Versioned & { type: "confirm_location"; destination: Destination })
+  /** 24.3 #20, #21 "못 간다고 알리기": ends an open or assigned pickup with the one line the requester should do instead. */
+  | (Versioned & { type: "no_driver"; note: string })
+  /** 24.3 #22 "알겠어": the requester acknowledges a `no_driver` cancellation. Idempotent, needs no version. */
+  | { type: "ack_fallback" }
   | { type: "expire" | "close_unconfirmed" };
 
 export type PickupError =
@@ -157,7 +186,11 @@ export type PickupEvent =
   /** 4.4 #12: a routine edit gave a non-customized occurrence another holder. */
   | "routine_reassigned"
   /** A member left or was removed and their trip moved to another guardian (server only). */
-  | "member_reassigned";
+  | "member_reassigned"
+  /** 24.3 #20, #21: a guardian declared that nobody can go ("못 간다고 알리기"). */
+  | "no_driver"
+  /** 24.3 #22: the requester pressed "알겠어" for the first time. */
+  | "fallback_acknowledged";
 
 export type PickupResult =
   | { ok: true; pickup: Pickup; events: readonly PickupEvent[]; ignored?: true }
@@ -171,6 +204,12 @@ export type PickupContext = {
   now: number;
   members: readonly Member[];
   vehicles?: readonly Vehicle[];
+  /**
+   * Members who marked this pickup's date (its wanted_at in the family's time zone) as a day they cannot drive (24.2).
+   * Only the routine composition reads it: an unavailable default driver does not get the occurrence. `unavailableOn`
+   * and `familyDate` build it from stored days. Absent means nobody.
+   */
+  unavailable?: readonly string[];
 };
 
 const minute = 60_000;
@@ -212,6 +251,55 @@ export function requestRecipients(
     recipientIds.has(vehicle.currentDriverId)
   ).map(({ id }) => id);
   return { memberIds, vehicleIds };
+}
+
+/** Trims a "대신 할 일" or "못 갈 때 안내" line as the server does; `null` unless 1 to 40 characters remain (24.2). */
+export function fallbackNoteText(note: string | null | undefined): string | null {
+  if (typeof note !== "string") return null;
+  const text = note.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
+  const length = [...text].length;
+  return length >= 1 && length <= 40 ? text : null;
+}
+
+/** `YYYY-MM-DD` of an instant in a time zone: a pickup's date is its wanted_at in the family's zone (24.2). */
+export function familyDate(at: number, timeZone = "Asia/Seoul"): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(new Date(at));
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** `day` plus `count` calendar days, both `YYYY-MM-DD`. */
+export function addDays(day: string, count: number): string {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, date + count)).toISOString().slice(0, 10);
+}
+
+/** The members who cannot drive on `day`: the `unavailable` list a pickup on that day takes in its context. */
+export function unavailableOn(days: readonly UnavailableDay[], day: string): string[] {
+  return [...new Set(days.filter((entry) => entry.day === day).map(({ memberId }) => memberId))];
+}
+
+/**
+ * "갈 수 있는 운전자" (24.2): the request recipients (23.3) who did not mark the pickup's date as a day they cannot
+ * drive and did not decline its family-wide offer (the pickup's latest offer, when it has no sender).
+ */
+export function availableDrivers(
+  pickup: Pick<Pickup, "familyId" | "requester" | "offer">,
+  members: readonly Member[],
+  unavailable: readonly string[] = [],
+): string[] {
+  const declined = pickup.offer && pickup.offer.fromMemberId === null ? pickup.offer.declinedBy : [];
+  return requestRecipients(pickup, members).memberIds.filter((id) => !unavailable.includes(id) && !declined.includes(id));
+}
+
+/** "갈 사람 없음" (24.2): an open pickup without any available driver. Computed, never stored. */
+export function nobodyAvailable(
+  pickup: Pick<Pickup, "familyId" | "requester" | "offer" | "status">,
+  members: readonly Member[],
+  unavailable: readonly string[] = [],
+): boolean {
+  return pickup.status === "open" && availableDrivers(pickup, members, unavailable).length === 0;
 }
 
 export function isCoordinates(point: Coordinates): boolean {
@@ -296,6 +384,13 @@ export function routineFamilyOffer(pickup: Pick<Pickup, "id" | "wantedAt">, now:
   };
 }
 
+/** The reason SQL stores for a `cancel` action: legacy aliases mapped, and a rider's plain cancellation marked as theirs. */
+function storedCancelReason(actor: Actor, reason: Extract<PickupAction, { type: "cancel" }>["reason"]): CancelReason {
+  const mapped = reason === "phone_resolved" ? "resolved_by_phone" : reason === "misclick" ? "mistake"
+    : reason === "other_transport" ? "other_way_home" : reason ?? "cancelled";
+  return actor.kind === "rider" && mapped === "cancelled" ? "child_cancelled" : mapped;
+}
+
 function closeOffer(offer: PickupOffer | null, status: OfferStatus): PickupOffer | null {
   return offer?.status === "pending" ? { ...offer, status } : offer;
 }
@@ -322,6 +417,11 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
   // SQL marks a routine occurrence customized when it is taken; some transitions mark any pickup.
   const takenRoutine = Boolean(pickup.customized) || pickup.source === "routine";
 
+  // 24.3: only a guardian declares that nobody can go, and a car never answers for the requester. Refused before the
+  // pickup is looked up, as in SQL, so the answer is the same for any pickup ID.
+  if ((action.type === "no_driver" && actor.kind !== "member") || (action.type === "ack_fallback" && actor.kind === "vehicle")) {
+    return fail("FORBIDDEN");
+  }
   if ((actor.kind === "member" && !member) || (actor.kind === "rider" && !isRequester) ||
       (actor.kind === "vehicle" && (!member || (context.vehicles !== undefined && !vehicle)))) {
     return fail("NOT_FOUND");
@@ -531,7 +631,8 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
           (pickup.status !== "open" && pickup.status !== "assigned"))) return fail("INVALID_STATE");
       if (!isActivePickup(pickup) || (pickup.status === "arrived" && (actor.kind !== "member" || action.reason !== "not_met")) ||
           (actor.kind === "rider" && pickup.source !== "request")) return fail("INVALID_STATE");
-      return ok(update({ status: "cancelled", offer: closeOffer(offer, "cancelled"), customized: true }), "cancelled");
+      return ok(update({ status: "cancelled", offer: closeOffer(offer, "cancelled"), customized: true,
+        cancelReason: storedCancelReason(actor, action.reason) }), "cancelled");
     case "confirm_location": {
       if (actor.kind !== "member" && (actor.kind !== "vehicle" || !actor.parked || !isDriver)) return fail("FORBIDDEN");
       if (!isActivePickup(pickup)) return fail("INVALID_STATE");
@@ -560,6 +661,25 @@ export function applyPickupAction(pickup: Pickup, actor: Actor, action: PickupAc
       if (pickup.status !== "arrived") return fail("INVALID_STATE");
       if (pickup.notMetAt !== null && now - pickup.notMetAt < 5 * minute) return fail("RATE_LIMITED");
       return ok({ ...pickup, notMetAt: now }, "not_met_reported");
+    case "no_driver": {
+      // 24.3 #20, #21. The requester cancels instead; an assigned trip is the assignee's to end (책임 유지, 24.1 #4).
+      if (isRequester) return fail("FORBIDDEN");
+      if (pickup.status === "open" && now >= pickup.wantedAt + 60 * minute) return fail("PICKUP_EXPIRED", expire(), "expired");
+      if (pickup.status !== "open" && pickup.status !== "assigned") return fail("INVALID_STATE");
+      if (pickup.status === "assigned" && pickup.assigneeId !== memberId) return fail("NOT_ASSIGNEE");
+      const note = fallbackNoteText(action.note);
+      if (note === null) return fail("VALIDATION");
+      return ok(update({
+        status: "cancelled", cancelReason: "no_driver", fallbackNote: note, fallbackBy: memberId, fallbackAckAt: null,
+        offer: closeOffer(offer, "cancelled"), customized: true,
+      }), "no_driver");
+    }
+    case "ack_fallback":
+      // 24.3 #22: the requester's "알겠어", recorded once; a repeat succeeds and changes nothing. Not a version change.
+      if (!isRequester) return fail("FORBIDDEN");
+      if (pickup.status !== "cancelled" || pickup.cancelReason !== "no_driver") return fail("INVALID_STATE");
+      if (pickup.fallbackAckAt != null) return ok();
+      return ok({ ...pickup, fallbackAckAt: now }, "fallback_acknowledged");
     case "expire":
       if (actor.kind !== "system") return fail("FORBIDDEN");
       if (pickup.status !== "open" || now < pickup.wantedAt + 60 * minute) return fail("INVALID_STATE");

@@ -19,6 +19,26 @@ returns jsonb language sql stable set search_path = '' as $$
     'assignee_display_name',deriro_private.member_name(p_pickup.assignee_member_id))
 $$;
 
+-- Guardian feeds (get_today, get_pickup) add what 24.5 shows: "갈 사람 없음", who cannot drive on the pickup's date
+-- (P-06), the place's "못 갈 때 안내" for the P-18 sheet, and who declared that nobody can go.
+create function deriro_private.guardian_feed_row(p_pickup public.pickups)
+returns jsonb language sql stable set search_path = '' as $$
+  select deriro_private.pickup_feed_row(p_pickup) || jsonb_build_object(
+    'no_available_driver',p_pickup.status = 'open' and cardinality(deriro_private.available_drivers(p_pickup)) = 0,
+    'unavailable_member_ids',coalesce((select jsonb_agg(u.member_id order by u.member_id) from public.member_unavailable_days u
+      join public.families f on f.id = u.family_id
+      join public.family_members m on m.id = u.member_id and m.left_at is null
+      where u.family_id = p_pickup.family_id and u.day = (p_pickup.wanted_at at time zone f.timezone)::date),'[]'),
+    'place_fallback_note',(select pl.fallback_note from public.places pl where pl.id = p_pickup.place_id),
+    'fallback_by_name',deriro_private.member_name(p_pickup.fallback_by_member_id))
+$$;
+
+-- 24.5: the vehicle feed does not change. A no_driver pickup reaches the car as an ordinary cancellation.
+create function deriro_private.vehicle_feed_row(p_pickup public.pickups)
+returns jsonb language sql stable set search_path = '' as $$
+  select deriro_private.pickup_feed_row(p_pickup) - array['fallback_note','fallback_by_member_id','fallback_ack_at']
+$$;
+
 create function deriro_private.active_status(p_status public.pickup_status)
 returns boolean language sql immutable set search_path = '' as $$
   select p_status in ('open','assigned','en_route','arrived')
@@ -124,8 +144,8 @@ begin
   insert into public.pickups(family_id,rider_id,rider_member_id,source,routine_id,occurrence_date,status,assignment_round,
     assignee_member_id,vehicle_id,place_id,pickup_point_id,location_source,location_confirmed,dest_lat,dest_lng,dest_label,pin_note,wanted_at)
   select r.family_id,r.rider_id,r.rider_member_id,'routine',r.id,day.value::date,
-    case when driver.id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
-    case when driver.id is null then 0 else 1 end,driver.id,vehicle.id,r.place_id,point.id,
+    case when holder.id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
+    case when holder.id is null then 0 else 1 end,holder.id,case when holder.id is not null then vehicle.id end,r.place_id,point.id,
     case when point.id is null then 'saved_place'::public.location_source else 'saved_point'::public.location_source end,
     true,coalesce(point.lat,p.lat),coalesce(point.lng,p.lng),coalesce(point.label,p.label),point.note,
     (day.value::date + r.time_local) at time zone f.timezone
@@ -139,6 +159,9 @@ begin
     and vehicle.revoked_at is null and vehicle.current_driver_member_id = driver.id
   cross join lateral generate_series((now() at time zone f.timezone)::date,
     (now() at time zone f.timezone)::date + p_days - 1, interval '1 day') as day(value)
+  -- 24.3: on the default driver's "못 가는 날" the occurrence is open. Nobody else is assigned automatically.
+  cross join lateral (select case when not exists(select 1 from public.member_unavailable_days u
+    where u.member_id = driver.id and u.day = day.value::date) then driver.id end as id) as holder
   where (p_family_id is null or r.family_id = p_family_id) and r.active and r.archived_at is null
     and (r.pickup_point_id is null or point.id is not null)
     and day.value::date >= r.start_date and (r.end_date is null or day.value::date <= r.end_date)
@@ -164,6 +187,8 @@ declare
   car_id uuid;
   previous_assignee_id uuid;
   previous_status public.pickup_status;
+  occurrence_driver_id uuid;
+  occurrence_car_id uuid;
 begin
   if new is not distinct from old then return new; end if;
   if not new.active and new.archived_at is null then return new; end if;
@@ -194,17 +219,25 @@ begin
       perform deriro_private.add_event(occurrence, null, 'cancelled', jsonb_build_object('cause',
         case when new.archived_at is not null then 'routine_archived' else 'routine_changed' end));
     else
+      -- 24.3: on the default driver's "못 가는 날" the occurrence stays open, as ensure_occurrences creates it.
+      if exists(select 1 from public.member_unavailable_days u where u.member_id = driver_id and u.day = occurrence.occurrence_date) then
+        occurrence_driver_id := null;
+        occurrence_car_id := null;
+      else
+        occurrence_driver_id := driver_id;
+        occurrence_car_id := car_id;
+      end if;
       previous_assignee_id := occurrence.assignee_member_id;
       previous_status := occurrence.status;
       -- A pending family-wide routine offer asked for a driver while nobody held the trip. When the recompute gives the
       -- occurrence another holder (open to assigned, assigned to open, or a different default driver), the system
       -- withdraws that offer (4.4 cancelled; superseded is only for a newer offer, 4.4 #1).
-      if previous_assignee_id is distinct from driver_id then
+      if previous_assignee_id is distinct from occurrence_driver_id then
         update public.pickup_offers set status = 'cancelled',resolved_at = now() where pickup_id = occurrence.id and status = 'pending';
       end if;
-      update public.pickups set status = case when driver_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
-        rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = driver_id,
-        vehicle_id = car_id,
+      update public.pickups set status = case when occurrence_driver_id is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
+        rider_id = new.rider_id,rider_member_id = new.rider_member_id,assignee_member_id = occurrence_driver_id,
+        vehicle_id = occurrence_car_id,
         place_id = new.place_id,pickup_point_id = point.id,location_source = case when point.id is null
           then 'saved_place'::public.location_source else 'saved_point'::public.location_source end,
         location_confirmed = true,dest_lat = coalesce(point.lat,place.lat),dest_lng = coalesce(point.lng,place.lng),
@@ -213,7 +246,7 @@ begin
       -- A new holder is a transition and gets an event (4.5). The event queues no notice, so a routine edit does not
       -- push the family per occurrence: the scheduler reminds a new default driver and announces an open occurrence at
       -- most once (A.4, routine_offer_created_at is kept).
-      if previous_assignee_id is distinct from driver_id then
+      if previous_assignee_id is distinct from occurrence_driver_id then
         perform deriro_private.add_event(occurrence, null, 'routine_reassigned', jsonb_strip_nulls(jsonb_build_object(
           'previous_assignee_id', previous_assignee_id, 'previous_status', previous_status, 'cause', 'routine_changed')));
       end if;
@@ -253,6 +286,17 @@ declare
   start_arg date := coalesce((p_data->>'start_date')::date,(now() at time zone 'Asia/Seoul')::date);
   end_arg date := (p_data->>'end_date')::date;
   active_arg boolean := coalesce((p_data->>'active')::boolean,true);
+  -- upsert_place: null keeps the current "못 갈 때 안내" (a new place has none), an empty or blank line clears it.
+  fallback_given boolean := p_data->>'fallback_note' is not null;
+  fallback_arg text := nullif(deriro_private.trim_note(p_data->>'fallback_note'),'');
+  day_arg date := (p_data->>'day')::date;
+  unavailable_arg boolean := (p_data->>'unavailable')::boolean;
+  tz text;
+  today_local date;
+  next_driver uuid;
+  next_car uuid;
+  previous_assignee uuid;
+  previous_state public.pickup_status;
   blockers jsonb;
   violated text;
 begin
@@ -260,6 +304,57 @@ begin
   if actor.kind is distinct from 'member' then return deriro_private.err('NOT_GUARDIAN'); end if;
   perform 1 from public.families where id=actor.family_id for key share;
   if not found then return deriro_private.err('NOT_FOUND'); end if;
+  if p_action = 'set_unavailable_day' then
+    -- 24.3 못 가는 날: a guardian who can drive marks or clears one of their own days, today to 60 days ahead (family time
+    -- zone). Trips already held stay held. An untouched (not customized) upcoming occurrence on that day follows the change
+    -- (4.4 #12, routine_reassigned without a notice): marking reopens the member's default assignment, clearing gives
+    -- back an open one whose routine default is the member, unless the family-wide offer was already made.
+    if not coalesce(actor.can_drive,false) then return deriro_private.err('FORBIDDEN'); end if;
+    select f.timezone into tz from public.families f where f.id=actor.family_id;
+    today_local := (now() at time zone tz)::date;
+    if day_arg is null or unavailable_arg is null or day_arg < today_local or day_arg > today_local + 60 then
+      return deriro_private.err('VALIDATION');
+    end if;
+    if unavailable_arg then
+      insert into public.member_unavailable_days(family_id,member_id,day) values(actor.family_id,actor.member_id,day_arg)
+        on conflict do nothing;
+    else
+      delete from public.member_unavailable_days where member_id=actor.member_id and day=day_arg;
+    end if;
+    for occurrence in select p.* from public.pickups p where p.family_id=actor.family_id and p.source='routine'
+      and not p.is_customized and p.wanted_at>=now() and p.status in ('open','assigned')
+      and (p.wanted_at at time zone tz)::date=day_arg order by p.id for update
+    loop
+      if unavailable_arg then
+        continue when occurrence.status<>'assigned' or occurrence.assignee_member_id is distinct from actor.member_id;
+        next_driver := null;
+        next_car := null;
+      else
+        continue when occurrence.status<>'open' or occurrence.routine_offer_created_at is not null;
+        select * into routine from public.routines r where r.id=occurrence.routine_id;
+        continue when routine.default_assignee_member_id is distinct from actor.member_id
+          or not deriro_private.eligible_driver(actor.family_id,actor.member_id,occurrence.rider_member_id);
+        next_driver := actor.member_id;
+        next_car := (select v.id from public.vehicles v where v.family_id=actor.family_id and v.id=routine.default_vehicle_id
+          and v.revoked_at is null and v.current_driver_member_id=actor.member_id);
+      end if;
+      previous_assignee := occurrence.assignee_member_id;
+      previous_state := occurrence.status;
+      update public.pickup_offers set status='cancelled',resolved_at=now() where pickup_id=occurrence.id and status='pending';
+      update public.pickups set status=case when next_driver is null then 'open'::public.pickup_status else 'assigned'::public.pickup_status end,
+        assignee_member_id=next_driver,vehicle_id=next_car where id=occurrence.id returning * into occurrence;
+      perform deriro_private.add_event(occurrence,actor,'routine_reassigned',jsonb_strip_nulls(jsonb_build_object(
+        'previous_assignee_id',previous_assignee,'previous_status',previous_state,
+        'cause',case when unavailable_arg then 'unavailable_day' else 'unavailable_day_cleared' end)));
+    end loop;
+    return deriro_private.ok(jsonb_build_object(
+      'days',coalesce((select jsonb_agg(jsonb_build_object('member_id',u.member_id,'day',u.day) order by u.day,u.member_id)
+        from public.member_unavailable_days u join public.family_members m on m.id=u.member_id and m.left_at is null
+        where u.family_id=actor.family_id and u.day between today_local and today_local+60),'[]'),
+      'held_pickup_ids',coalesce((select jsonb_agg(p.id order by p.wanted_at,p.id) from public.pickups p
+        where p.family_id=actor.family_id and p.assignee_member_id=actor.member_id and p.status in ('assigned','en_route','arrived')
+          and (p.wanted_at at time zone tz)::date=day_arg),'[]')));
+  end if;
   if p_action in ('upsert_place','upsert_pickup_point') and
     (label_arg is null or char_length(label_arg) > case when p_action = 'upsert_place' then 40 else 20 end
       or lat_arg is null or lng_arg is null or not (lat_arg between -90 and 90 and lng_arg between -180 and 180))
@@ -278,12 +373,15 @@ begin
       return deriro_private.ok('{}');
     end if;
     if kind_arg is null or kind_arg not in ('home','school','academy','other') or radius_arg is null or radius_arg not between 50 and 500
+      or char_length(fallback_arg) > 40
       then return deriro_private.err('VALIDATION'); end if;
     if place.id is null then
-      insert into public.places(family_id,label,kind,lat,lng,radius_m) values(actor.family_id,label_arg,kind_arg,lat_arg,lng_arg,radius_arg)
+      insert into public.places(family_id,label,kind,lat,lng,radius_m,fallback_note)
+        values(actor.family_id,label_arg,kind_arg,lat_arg,lng_arg,radius_arg,fallback_arg)
         returning * into place;
     else
-      update public.places set label=label_arg,kind=kind_arg,lat=lat_arg,lng=lng_arg,radius_m=radius_arg where id=place.id returning * into place;
+      update public.places set label=label_arg,kind=kind_arg,lat=lat_arg,lng=lng_arg,radius_m=radius_arg,
+        fallback_note=case when fallback_given then fallback_arg else place.fallback_note end where id=place.id returning * into place;
     end if;
     return deriro_private.ok(jsonb_build_object('place',to_jsonb(place)));
   end if;
@@ -429,17 +527,26 @@ begin
         from public.family_members m where m.family_id=actor.family_id and m.left_at is null and m.phone_e164 is not null),'[]'),
       'places',coalesce((select jsonb_agg(to_jsonb(p)) from public.places p where p.family_id=actor.family_id and p.archived_at is null),'[]'),
       'pickup_points',coalesce((select jsonb_agg(to_jsonb(p)) from public.pickup_points p where p.family_id=actor.family_id and p.archived_at is null),'[]'),
+      -- 24.5: an unacknowledged no_driver pickup stays until max(wanted_at, cancelled_at) + 3 hours, an acknowledged one
+      -- for 10 minutes. Unacknowledged after 5 minutes, the call buttons grow (escalation_stage 1, as open_escalated).
       'actives',coalesce((select jsonb_agg(deriro_private.pickup_feed_row(p) - array['dest_lat','dest_lng','nav_session_id','last_start_action_id']
         || jsonb_build_object('escalation_stage',case when p.status='expired' then 2 when p.status='open'
-          and p.created_at <= now()-interval '5 minutes'/fam.demo_time_scale then 1 else 0 end,
+          and p.created_at <= now()-interval '5 minutes'/fam.demo_time_scale then 1
+          when p.cancel_reason='no_driver' and p.fallback_ack_at is null
+            and p.cancelled_at <= now()-interval '5 minutes'/fam.demo_time_scale then 1 else 0 end,
           'can_cancel',p.source='request' and p.status in ('open','assigned','en_route'),
           'cancel_needs_confirm',p.status='en_route',
-          'can_report_not_met',p.status='arrived' and (p.not_met_reported_at is null or p.not_met_reported_at <= now()-interval '5 minutes'))
+          'can_report_not_met',p.status='arrived' and (p.not_met_reported_at is null or p.not_met_reported_at <= now()-interval '5 minutes'),
+          'nobody_available',p.status='open' and cardinality(deriro_private.available_drivers(p))=0,
+          'wait_note',(select pl.fallback_note from public.places pl where pl.id=p.place_id),
+          'fallback_by_name',deriro_private.member_name(p.fallback_by_member_id))
         order by case p.status when 'arrived' then 0 when 'en_route' then 1 when 'assigned' then 2 when 'open' then 3 else 4 end,p.wanted_at)
         from public.pickups p where p.rider_id=rider.id and (
           (deriro_private.active_status(p.status) and (p.source='request' or p.rider_ready_at is not null or p.status in ('en_route','arrived')))
           or (p.status in ('completed','cancelled','expired') and coalesce(p.completed_at,p.cancelled_at,p.expired_at) >= now()-interval '60 seconds')
-          or (p.status='closed_unconfirmed' and p.closed_unconfirmed_at >= now()-interval '10 minutes'))),'[]'),
+          or (p.status='closed_unconfirmed' and p.closed_unconfirmed_at >= now()-interval '10 minutes')
+          or (p.cancel_reason='no_driver' and ((p.fallback_ack_at is null and now() < greatest(p.wanted_at,p.cancelled_at)+interval '3 hours')
+            or p.fallback_ack_at >= now()-interval '10 minutes')))),'[]'),
       'today',coalesce((select jsonb_agg(deriro_private.pickup_feed_row(p) - array['dest_lat','dest_lng','nav_session_id','last_start_action_id']
         || jsonb_build_object('can_ready_early',p.status in ('open','assigned') and p.rider_ready_at is null)
         order by p.wanted_at) from public.pickups p where p.rider_id=rider.id and p.source='routine'
@@ -506,7 +613,7 @@ begin
         and m.left_at is null and m.can_drive),'[]'),
       'state',deriro_private.vehicle_state_row(telemetry),
       'range',range_data,
-      'cards',coalesce((select jsonb_agg(deriro_private.pickup_feed_row(c.row) || jsonb_build_object(
+      'cards',coalesce((select jsonb_agg(deriro_private.vehicle_feed_row(c.row) || jsonb_build_object(
         'kind',c.kind,'pickup_id',(c.row).id,'offer_id',c.offer_id,'offer_note',c.offer_note,'from_name',deriro_private.member_name(c.from_member_id),
         'dest',jsonb_build_object('lat',(c.row).dest_lat,'lng',(c.row).dest_lng,'label',(c.row).dest_label,'note',(c.row).pin_note),
         'accuracy_m',case when not (c.row).location_confirmed then round((c.row).raw_accuracy_m)::int end,
@@ -522,13 +629,13 @@ begin
           when c.kind in ('child_ready','not_departed','routine_reminder') then 'handoff_all' end,
         'urgency',case when c.priority<=6 then 'high' else 'normal' end)
         order by c.priority,c.wanted_at) from ordered c),'[]'),
-      'active_trip',case when active_trip.id is not null then deriro_private.pickup_feed_row(active_trip) || jsonb_build_object(
+      'active_trip',case when active_trip.id is not null then deriro_private.vehicle_feed_row(active_trip) || jsonb_build_object(
         'pickup_id',active_trip.id,'nav_session_id',vehicle.active_nav_session_id,'destination_revision',vehicle.active_destination_revision) end,
-      'today',case when parked then coalesce((select jsonb_agg(deriro_private.pickup_feed_row(p)
+      'today',case when parked then coalesce((select jsonb_agg(deriro_private.vehicle_feed_row(p)
         order by (p.vehicle_id=vehicle.id) desc nulls last,p.wanted_at) from public.pickups p
         where p.family_id=vehicle.family_id and p.wanted_at<boundary and p.wanted_at>=now()-interval '1 day'
           and (p.vehicle_id=vehicle.id or (eligible and p.rider_member_id is distinct from vehicle.current_driver_member_id))),'[]') else '[]'::jsonb end,
-      'nearby_places',case when parked and eligible then coalesce((select jsonb_agg(to_jsonb(pl) || jsonb_build_object('distance_m',
+      'nearby_places',case when parked and eligible then coalesce((select jsonb_agg((to_jsonb(pl) - 'fallback_note') || jsonb_build_object('distance_m',
         deriro_private.distance_m(coalesce(active_trip.dest_lat,(select (o.row).dest_lat from ordered o order by o.priority,o.wanted_at limit 1)),
           coalesce(active_trip.dest_lng,(select (o.row).dest_lng from ordered o order by o.priority,o.wanted_at limit 1)),pl.lat,pl.lng)))
         from public.places pl where pl.family_id=vehicle.family_id and pl.archived_at is null),'[]') else '[]'::jsonb end,
@@ -573,10 +680,15 @@ begin
           and (p.status<>'open' or p.rider_member_id=me.id or me.can_drive)
       )
       select jsonb_build_object(
-        'active',coalesce(jsonb_agg(deriro_private.pickup_feed_row(v.row) || jsonb_build_object('offer',deriro_private.visible_offer(v.row,me))
+        'active',coalesce(jsonb_agg(deriro_private.guardian_feed_row(v.row) || jsonb_build_object('offer',deriro_private.visible_offer(v.row,me))
           order by v.wanted_at) filter (where v.active),'[]'),
-        'timeline',coalesce(jsonb_agg(deriro_private.pickup_feed_row(v.row) || jsonb_build_object('offer',deriro_private.visible_offer(v.row,me))
+        'timeline',coalesce(jsonb_agg(deriro_private.guardian_feed_row(v.row) || jsonb_build_object('offer',deriro_private.visible_offer(v.row,me))
           order by v.wanted_at) filter (where not v.active or (v.row).source='routine'),'[]'),
+        -- 24.6: every active guardian's "못 가는 날" from today for 14 days (P-19, P-04 "내일").
+        'unavailable_days',coalesce((select jsonb_agg(jsonb_build_object('member_id',u.member_id,'day',u.day) order by u.day,u.member_id)
+          from public.member_unavailable_days u join public.family_members m on m.id=u.member_id and m.left_at is null
+          where u.family_id=fam.id and u.day between (now() at time zone fam.timezone)::date
+            and (now() at time zone fam.timezone)::date+13),'[]'),
         'pending_offers_to_me',coalesce((select jsonb_agg(to_jsonb(o)) from public.pickup_offers o join public.pickups p on p.id=o.pickup_id
           where o.family_id=fam.id and o.status='pending' and o.expires_at>now() and me.can_drive
             and p.rider_member_id is distinct from me.id and o.from_member_id is distinct from me.id
@@ -595,7 +707,7 @@ begin
       select * into telemetry from public.vehicle_states s where s.vehicle_id=vehicle.id;
       if vehicle.id is not null then range_data := deriro_private.range_summary(vehicle,pickup); end if;
       result := jsonb_build_object(
-        'pickup',deriro_private.pickup_feed_row(pickup),
+        'pickup',deriro_private.guardian_feed_row(pickup),
         'offers',coalesce((select jsonb_agg(to_jsonb(o)||jsonb_build_object('declined_by',
           coalesce((select jsonb_agg(r.member_id) from public.offer_responses r where r.offer_id=o.id),'[]'))
           order by (o.status='pending') desc,o.created_at desc,o.id)
@@ -710,14 +822,17 @@ $$;
 
 revoke execute on function deriro_private.rider_name(public.pickups),
   deriro_private.member_name(uuid),deriro_private.pickup_feed_row(public.pickups),deriro_private.active_status(public.pickup_status),
+  deriro_private.guardian_feed_row(public.pickups),deriro_private.vehicle_feed_row(public.pickups),
   deriro_private.range_summary(public.vehicles,public.pickups),deriro_private.recompute_low_range(uuid),
   deriro_private.ensure_occurrences(uuid,int),deriro_private.revise_routine(),deriro_private.vehicle_state_row(public.vehicle_states),
   deriro_private.visible_offer(public.pickups,public.family_members)
   from public, anon, authenticated, service_role;
 
-create function public.upsert_place(p_label text,p_kind text,p_lat double precision,p_lng double precision,p_radius_m int default 150,p_place_id uuid default null)
+create function public.upsert_place(p_label text,p_kind text,p_lat double precision,p_lng double precision,p_radius_m int default 150,p_place_id uuid default null,
+  p_fallback_note text default null)
 returns jsonb language sql security invoker set search_path = ''
-as $$ select deriro_private.manage_schedule('upsert_place',jsonb_build_object('label',p_label,'kind',p_kind,'lat',p_lat,'lng',p_lng,'radius',p_radius_m,'id',p_place_id)) $$;
+as $$ select deriro_private.manage_schedule('upsert_place',jsonb_build_object('label',p_label,'kind',p_kind,'lat',p_lat,'lng',p_lng,'radius',p_radius_m,'id',p_place_id,
+  'fallback_note',p_fallback_note)) $$;
 
 create function public.archive_place(p_place_id uuid)
 returns jsonb language sql security invoker set search_path = ''
@@ -744,6 +859,10 @@ as $$ select deriro_private.manage_schedule('upsert_routine',jsonb_build_object(
 create function public.archive_routine(p_routine_id uuid)
 returns jsonb language sql security invoker set search_path = ''
 as $$ select deriro_private.manage_schedule('archive_routine',jsonb_build_object('id',p_routine_id)) $$;
+
+create function public.set_unavailable_day(p_day date,p_unavailable boolean)
+returns jsonb language sql security invoker set search_path = ''
+as $$ select deriro_private.manage_schedule('set_unavailable_day',jsonb_build_object('day',p_day,'unavailable',p_unavailable)) $$;
 
 create function public.ensure_occurrences(p_days int default 2)
 returns jsonb language sql security invoker set search_path = ''
@@ -805,7 +924,8 @@ revoke execute on function
   deriro_private.manage_schedule(text,jsonb),
   deriro_private.read_feed(text,uuid,int),
   deriro_private.vehicle_operation(text,jsonb),
-  public.upsert_place(text,text,double precision,double precision,int,uuid),
+  public.upsert_place(text,text,double precision,double precision,int,uuid,text),
+  public.set_unavailable_day(date,boolean),
   public.archive_place(uuid),
   public.upsert_pickup_point(uuid,text,double precision,double precision,text,uuid),
   public.archive_pickup_point(uuid),
@@ -829,7 +949,8 @@ grant execute on function
   deriro_private.manage_schedule(text,jsonb),
   deriro_private.read_feed(text,uuid,int),
   deriro_private.vehicle_operation(text,jsonb),
-  public.upsert_place(text,text,double precision,double precision,int,uuid),
+  public.upsert_place(text,text,double precision,double precision,int,uuid,text),
+  public.set_unavailable_day(date,boolean),
   public.archive_place(uuid),
   public.upsert_pickup_point(uuid,text,double precision,double precision,text,uuid),
   public.archive_pickup_point(uuid),

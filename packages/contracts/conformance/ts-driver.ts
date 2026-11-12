@@ -1,19 +1,26 @@
 // Runs a scenario through the TypeScript machine and the composition functions the browser demo calls
 // (apps/web/src/demo-domain.ts uses the same ones): `newRequestPickup` and `newOccurrencePickup` to create,
 // `applyPickupAction` for transitions, `declineFromVehicle` for "못 가요", `sweepPickup` for the scheduler,
-// `reviseOccurrence` for routine edits and `guidanceAfter` for the car's active guidance. A rejected result is stored
-// as well, because it can carry an expiry (4.5), exactly as the demo stores it.
+// `reviseOccurrence` for routine edits, `setUnavailableDay` and `reviseForUnavailableDay` for 못 가는 날, and
+// `guidanceAfter` for the car's active guidance. A rejected result is stored as well, because it can carry an expiry
+// (4.5), exactly as the demo stores it.
 import {
+  addDays,
   applyPickupAction,
+  availableDrivers,
   canRequestPickup,
   declineFromVehicle,
+  familyDate,
   familyOfferId,
   guidanceAfter,
   newOccurrencePickup,
   newRequestPickup,
   resolveDestination,
+  reviseForUnavailableDay,
   reviseOccurrence,
+  setUnavailableDay,
   sweepPickup,
+  unavailableOn,
 } from "../src/index.ts";
 import type {
   Actor,
@@ -27,6 +34,7 @@ import type {
   PickupResult,
   Place,
   Requester,
+  UnavailableDay,
   Vehicle,
 } from "../src/index.ts";
 import { expiresInMin, familyOf, isAct, minute, versionOf } from "./model.ts";
@@ -35,6 +43,8 @@ import type { ActStep, ActionSpec, LocationSpec, Outcome, PickupSpec, RequestSpe
 /** 17:00 in Seoul. Only differences from this clock matter. */
 export const tsEpoch = Date.UTC(2026, 10, 9, 8);
 const familyId = "family";
+const timeZone = "Asia/Seoul";
+export const defaultFallbackNote = "학원 안에서 기다리기";
 
 type TsVehicle = Vehicle & { parked: boolean };
 type Session = { id: string; revision: number };
@@ -52,6 +62,7 @@ type RoutineDefinition = {
 
 export function runTs(scenario: Scenario): Run {
   const world = new TsWorld(scenario);
+  for (const mark of scenario.unavailable ?? []) world.markBefore(scenario, mark.member, mark.dayOf);
   const created: Run["created"] = {};
   for (const spec of scenario.pickups) created[spec.key] = world.create(spec);
   const steps = scenario.steps.map((step) => {
@@ -73,6 +84,8 @@ class TsWorld {
   readonly points: PickupPoint[];
   readonly vehicles: TsVehicle[];
   readonly pickups = new Map<string, Pickup>();
+  /** 못 가는 날 as the demo stores them (24.7). */
+  days: UnavailableDay[] = [];
   private readonly routines = new Map<string, RoutineDefinition>();
   private readonly actionIds = new Map<string, string>();
   private readonly sessions = new Map<string, Session[]>();
@@ -102,8 +115,21 @@ class TsWorld {
     return vehicle;
   }
 
-  private context(): PickupContext {
-    return { now: this.now, members: this.members, vehicles: this.vehicles };
+  /** With a pickup, the context carries the members who cannot drive on its date. */
+  private context(pickup?: Pick<Pickup, "wantedAt">): PickupContext {
+    const unavailable = pickup ? unavailableOn(this.days, familyDate(pickup.wantedAt, timeZone)) : [];
+    return { now: this.now, members: this.members, vehicles: this.vehicles, unavailable };
+  }
+
+  /** A day marked before pickups exist: the date the spec's pickup will have. */
+  markBefore(scenario: Scenario, member: string, pickupKey: string): void {
+    const spec = scenario.pickups.find(({ key }) => key === pickupKey);
+    if (!spec) throw new Error(`unknown pickup ${pickupKey}`);
+    const day = familyDate(this.now + (spec.wantedInMin ?? 0) * minute, timeZone);
+    const result = setUnavailableDay(this.days, this.members.find(({ id }) => id === member),
+      { memberId: member, day, unavailable: true }, familyDate(this.now, timeZone));
+    if (!result.ok) throw new Error(`marking ${member} failed: ${result.code}`);
+    this.days = result.days;
   }
 
   create(spec: PickupSpec): Outcome {
@@ -135,7 +161,7 @@ class TsWorld {
       id: spec.key, familyId, requester: definition.requester, destination: this.placeDestination(spec.place),
       wantedAt: definition.wantedAt, assigneeId: definition.assigneeId, vehicleId: definition.vehicleId,
       notifyBeforeMin: definition.notifyBeforeMin,
-    }, this.context());
+    }, this.context({ wantedAt: definition.wantedAt }));
   }
 
   private placeDestination(place: string) {
@@ -174,20 +200,47 @@ class TsWorld {
     const expectedVersion = versionOf(pickup.version, "version" in spec ? spec.version : undefined);
     switch (spec.type) {
       case "sweep":
-        return [spec.type, sweepPickup(pickup, this.context())];
+        return [spec.type, sweepPickup(pickup, this.context(pickup))];
       case "vehicle_decline":
-        return [spec.type, declineFromVehicle(pickup, actor, { expectedVersion, offerId: this.id("offer") }, this.context())];
+        return [spec.type, declineFromVehicle(pickup, actor, { expectedVersion, offerId: this.id("offer") }, this.context(pickup))];
+      case "unavailable_day":
+        return [spec.type, this.unavailableDay(key, pickup, actor, spec)];
       case "nav_result":
         // TS has no navigation result. The demo decides a navigation failure on the car (`navFails`) at the start.
         return [spec.type, { ok: true, pickup, events: [] }];
       case "edit_routine":
       case "archive_routine":
-        return [spec.type, reviseOccurrence(pickup, this.plan(key, spec), this.context())];
+        return [spec.type, reviseOccurrence(pickup, this.plan(key, spec), this.context(pickup))];
       default: {
         const action = this.action(key, pickup, actor, spec, expectedVersion);
-        return [action.type, applyPickupAction(pickup, actor, action, this.context())];
+        return [action.type, applyPickupAction(pickup, actor, action, this.context(pickup))];
       }
     }
+  }
+
+  /**
+   * As the demo would: store the change, then let every routine occurrence on that day follow it. Returns the step
+   * pickup's result; the other pickups on that day are stored here.
+   */
+  private unavailableDay(key: string, pickup: Pickup, actor: Actor,
+    spec: Extract<ActionSpec, { type: "unavailable_day" }>): PickupResult {
+    const today = familyDate(this.now, timeZone);
+    const day = spec.fromToday === undefined ? familyDate(pickup.wantedAt, timeZone) : addDays(today, spec.fromToday);
+    const memberId = actor.kind === "member" ? actor.id : "";
+    const change = { memberId, day, unavailable: spec.unavailable ?? true };
+    const stored = setUnavailableDay(this.days, this.members.find(({ id }) => id === memberId), change, today);
+    if (!stored.ok) return { ok: false, code: stored.code, pickup, events: [] };
+    this.days = stored.days;
+    let own: PickupResult = { ok: true, pickup, events: [] };
+    for (const [other, current] of this.pickups) {
+      if (familyDate(current.wantedAt, timeZone) !== day) continue;
+      const definition = this.routines.get(other);
+      const routine = { assigneeId: definition?.assigneeId ?? null, vehicleId: definition?.vehicleId ?? null };
+      const result = reviseForUnavailableDay(current, { memberId, unavailable: change.unavailable, routine }, this.context(current));
+      if (other === key) own = result;
+      else this.pickups.set(other, result.pickup);
+    }
+    return own;
   }
 
   /** Applies the edit to the routine and says where its occurrence goes now. */
@@ -260,6 +313,10 @@ class TsWorld {
         return { type: "ready", expectedVersion };
       case "not_met":
         return { type: "not_met", expectedVersion };
+      case "no_driver":
+        return { type: "no_driver", expectedVersion, note: spec.note ?? defaultFallbackNote };
+      case "ack_fallback":
+        return { type: "ack_fallback" };
       default:
         throw new Error(`${spec.type} is not a pickup action`);
     }
@@ -330,6 +387,13 @@ class TsWorld {
       events: [...result.events],
       active: Object.fromEntries(this.vehicles.map((vehicle) => [vehicle.id, vehicle.activePickupId ?? null])),
       pickupCount: this.pickups.size,
+      cancelReason: after.cancelReason ?? null,
+      fallbackNote: after.fallbackNote ?? null,
+      fallbackBy: after.fallbackBy ?? null,
+      fallbackAcked: after.fallbackAckAt != null,
+      available: after.status === "open"
+        ? availableDrivers(after, this.members, this.context(after).unavailable).sort()
+        : null,
     };
   }
 }

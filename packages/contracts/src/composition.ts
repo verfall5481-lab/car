@@ -1,16 +1,19 @@
 // What the server does around single transitions: creating requests and routine occurrences, the scheduler pass,
-// the car's "못 가요", routine revision, and the car's one active guidance. Each function mirrors the SQL function it
-// names. The browser demo and the conformance suite call these, so the demo behaves as the backend does.
-import { applyPickupAction, familyOfferId, isActivePickup, requestRecipients, routineFamilyOffer } from "./index.ts";
+// the car's "못 가요", routine revision, days a guardian cannot drive, and the car's one active guidance. Each function
+// mirrors the SQL function it names. The browser demo and the conformance suite call these, so the demo behaves as the
+// backend does.
+import { addDays, applyPickupAction, familyOfferId, isActivePickup, requestRecipients, routineFamilyOffer } from "./index.ts";
 import type {
   Actor,
   Destination,
+  Member,
   Pickup,
   PickupContext,
   PickupError,
   PickupEvent,
   PickupResult,
   Requester,
+  UnavailableDay,
   Vehicle,
 } from "./index.ts";
 
@@ -39,15 +42,17 @@ export function newRequestPickup(input: NewPickup): Pickup {
 
 type Holder = { assigneeId: string | null; vehicleId: string | null };
 type HolderInput = Pick<Pickup, "familyId" | "requester"> & Holder;
-type Family = Pick<PickupContext, "members" | "vehicles">;
+type Family = Pick<PickupContext, "members" | "vehicles" | "unavailable">;
 
 /**
  * The default holder of a routine occurrence, by the rule `ensure_occurrences` and `revise_routine` share: the default
- * driver only while still an eligible driver (23.1), the default car only while that driver is its current driver.
+ * driver only while still an eligible driver (23.1) who has not marked the occurrence's date as a day they cannot drive
+ * (24.3: the occurrence is then open, never given to someone else), the default car only while that driver drives it.
  */
 export function routineHolder(input: HolderInput, family: Family): Holder {
   const assigneeId = input.assigneeId;
-  if (assigneeId === null || !requestRecipients(input, family.members).memberIds.includes(assigneeId)) {
+  if (assigneeId === null || !requestRecipients(input, family.members).memberIds.includes(assigneeId) ||
+      family.unavailable?.includes(assigneeId)) {
     return { assigneeId: null, vehicleId: null };
   }
   const vehicle = family.vehicles?.find((entry) =>
@@ -58,7 +63,7 @@ export function routineHolder(input: HolderInput, family: Family): Holder {
 
 export type OccurrenceInput = NewPickup & Holder & { notifyBeforeMin: number };
 
-/** `ensure_occurrences`: assigned to the eligible default driver, otherwise open. */
+/** `ensure_occurrences`: assigned to the eligible default driver, otherwise open (also on the driver's 못 가는 날). */
 export function newOccurrencePickup(input: OccurrenceInput, family: Family): Pickup {
   const holder = routineHolder(input, family);
   return {
@@ -175,7 +180,7 @@ export function reviseOccurrence(pickup: Pickup, plan: OccurrencePlan | null, co
   if (!plan || plan.wantedAt < now) {
     return {
       ok: true,
-      pickup: { ...current, status: "cancelled", version: pickup.version + 1, offer: withdrawn },
+      pickup: { ...current, status: "cancelled", version: pickup.version + 1, offer: withdrawn, cancelReason: "routine_archived" },
       events: ["cancelled"],
     };
   }
@@ -221,4 +226,66 @@ export function guidanceAfter(vehicle: Vehicle, actor: Actor, action: { type: st
     return { activePickupId: null, activeSessionId: null, activeDestinationRevision: null };
   }
   return null;
+}
+
+export type UnavailableDayChange = { memberId: string; day: string; unavailable: boolean };
+export type UnavailableDayResult =
+  | { ok: true; days: UnavailableDay[] }
+  | { ok: false; code: Extract<PickupError, "FORBIDDEN" | "VALIDATION" | "NOT_FOUND">; days: readonly UnavailableDay[] };
+
+/**
+ * `set_unavailable_day` (24.3 못 가는 날, 24.6): a guardian who can drive marks or clears one of their own days, from
+ * `today` (the family's date now) to 60 days ahead. Returns the stored days; repeating a change is a success. Pass every
+ * pickup on that day through `reviseForUnavailableDay` afterwards.
+ */
+export function setUnavailableDay(
+  days: readonly UnavailableDay[],
+  member: Member | undefined,
+  change: UnavailableDayChange,
+  today: string,
+): UnavailableDayResult {
+  if (!member || member.leftAt != null || member.id !== change.memberId) return { ok: false, code: "NOT_FOUND", days };
+  if (!member.canDrive) return { ok: false, code: "FORBIDDEN", days };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(change.day) || addDays(change.day, 0) !== change.day || change.day < today ||
+      change.day > addDays(today, 60)) {
+    return { ok: false, code: "VALIDATION", days };
+  }
+  const others = days.filter((entry) => !(entry.memberId === change.memberId && entry.day === change.day));
+  return { ok: true, days: change.unavailable ? [...others, { memberId: change.memberId, day: change.day }] : others };
+}
+
+/**
+ * What `set_unavailable_day` does to one routine occurrence on the changed day (24.3 이미 만든 회차). Only an untouched
+ * (`customized` false), upcoming occurrence moves:
+ * - marking: the member's default `assigned` occurrence becomes `open` (a pending offer is withdrawn);
+ * - clearing: an `open` occurrence whose routine default (`routine`) is the member becomes theirs again, unless the
+ *   family-wide offer was already made (`routineOfferAt`).
+ * Either move records `routine_reassigned` and notifies nobody (4.4 #12). `context.unavailable` is the day's list after
+ * the change. A request, an accepted or handed-off occurrence and an occurrence of another day stay as they are.
+ */
+export function reviseForUnavailableDay(
+  pickup: Pickup,
+  change: Pick<UnavailableDayChange, "memberId" | "unavailable"> & { routine: Holder },
+  context: PickupContext,
+): PickupResult {
+  const untouched: PickupResult = { ok: true, pickup, events: [] };
+  if (pickup.source !== "routine" || pickup.customized || pickup.wantedAt < context.now) return untouched;
+  let holder: Holder;
+  if (change.unavailable) {
+    if (pickup.status !== "assigned" || pickup.assigneeId !== change.memberId) return untouched;
+    holder = { assigneeId: null, vehicleId: null };
+  } else {
+    if (pickup.status !== "open" || pickup.routineOfferAt != null || change.routine.assigneeId !== change.memberId) return untouched;
+    holder = routineHolder({ ...pickup, ...change.routine }, context);
+    if (holder.assigneeId !== change.memberId) return untouched;
+  }
+  const offer = pickup.offer?.status === "pending" ? { ...pickup.offer, status: "cancelled" as const } : pickup.offer;
+  return {
+    ok: true,
+    pickup: {
+      ...pickup, status: holder.assigneeId ? "assigned" : "open", assigneeId: holder.assigneeId, vehicleId: holder.vehicleId,
+      assignmentRound: pickup.assignmentRound + 1, version: pickup.version + 1, offer,
+    },
+    events: ["routine_reassigned"],
+  };
 }

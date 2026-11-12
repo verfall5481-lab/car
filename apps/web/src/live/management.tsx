@@ -7,12 +7,17 @@ import { isCoordinates } from '@deriro/contracts';
 import { clock, copy, dateLabel } from '../copy.ts';
 import type { DemoState } from '../demo-domain.ts';
 import { nameOf } from '../demo-domain.ts';
+import { routineGap } from '../guardian-view.ts';
+import { PlaceFallbackField, UnavailablePage } from '../no-driver.tsx';
+import type { DayToggle } from '../no-driver.tsx';
 import { Badge, Button, HeaderBell, MapPreview, MobileHeader, Placeholder, RadioLine, Row, Sheet, useClock, useToast } from '../ui.tsx';
-import { RoutineListRow } from '../management.tsx';
+import { RoutineListRow, UnavailableRow } from '../management.tsx';
 import { e164, InvitePanel, privacyVersion, PushSettings } from './accounts.tsx';
+import { unavailableDayParams, upsertPlaceParams } from './api.ts';
 import { describeError, useClient, useLiveMutation } from './context.tsx';
 import { browserPosition, searchPlaces, useMapKey } from './maps.tsx';
 import type { PlaceResult } from './maps.tsx';
+import { mapMember, unavailableDaySchema } from './models.ts';
 import type { Overview, Today, VehicleRow } from './models.ts';
 import { unsubscribePush } from './platform.ts';
 
@@ -24,7 +29,7 @@ function Family({ overview, state }: Props) {
       <section><h2>{copy.familyMembers}</h2>{overview.members.filter((row) => !row.left_at).map((row) => <Row key={row.id} icon={<UserRound size={19} />} title={row.display_name + (row.id === overview.me.id ? ` (${copy.me})` : '')} trailing={row.role === 'owner' ? copy.owner : undefined} to={`/p/members/${row.id}`} />)}<Row icon={<Plus size={19} />} title={copy.guardianInvite} to="/p/family/invite" /></section>
       <section><h2>{copy.person}</h2>{state.riders.filter((row) => !row.archivedAt).map((row) => <Row key={row.id} icon={<UserRound size={19} />} title={row.name} trailing={row.connected ? copy.connectedPhone : copy.unconnectedPhone} to={`/p/riders/${row.id}`} />)}<Row icon={<Plus size={19} />} title={copy.addRider} to="/p/riders/new" /></section>
       <section><h2>{copy.cars}</h2>{state.vehicles?.map((row) => <Row key={row.id} icon={<CarFront size={19} />} title={row.name} caption={`${copy.range(row.range)}, ${nameOf(state, row.currentDriverId) || copy.noAssignee}`} to={`/p/vehicles/${row.id}`} />)}<Row icon={<Plus size={19} />} title={copy.carConnect} to="/p/vehicles/pair" /></section>
-      <section><h2>{copy.places}</h2>{state.places.filter((row) => !row.archivedAt).map((row) => <Row key={row.id} icon={<MapPin size={19} />} title={row.label} to={`/p/places/${row.id}`} />)}<Row icon={<Plus size={19} />} title={copy.placeAdd} to="/p/places/new" /></section>
+      <section><h2>{copy.places}</h2>{state.places.filter((row) => !row.archivedAt).map((row) => <Row key={row.id} icon={<MapPin size={19} />} title={row.label} caption={row.fallbackNote || undefined} to={`/p/places/${row.id}`} />)}<Row icon={<Plus size={19} />} title={copy.placeAdd} to="/p/places/new" /></section>
     </div></>;
 }
 
@@ -149,6 +154,7 @@ function PlaceEdit({ overview, id }: { overview: Overview; id: string }) {
   const place = overview.places.find((row) => row.id === id && !row.archived_at);
   const routeState = useLocation().state as { coords?: Coordinates; fromPickup?: string } | null;
   const [name, setName] = useState(place?.label ?? '');
+  const [fallbackNote, setFallbackNote] = useState(place?.fallback_note ?? '');
   const [kind, setKind] = useState(place?.kind ?? 'other');
   const [coords, setCoords] = useState<Coordinates | undefined>(place ?? (routeState?.coords && isCoordinates(routeState.coords) ? routeState.coords : undefined));
   const [radius, setRadius] = useState(place?.radius_m ?? 150);
@@ -163,11 +169,12 @@ function PlaceEdit({ overview, id }: { overview: Overview; id: string }) {
     <form className="stack edit-form" onSubmit={async (event) => {
       event.preventDefault();
       if (!coords) return;
-      const result = await run('upsert_place', { p_place_id: place?.id, p_label: name.trim(), p_kind: kind, p_lat: coords.lat, p_lng: coords.lng, p_radius_m: radius }, copy.saved);
+      const result = await run('upsert_place', upsertPlaceParams({ id: place?.id, label: name, kind, lat: coords.lat, lng: coords.lng, radiusM: radius, fallbackNote }), copy.saved);
       if (result) navigate(routeState?.fromPickup && /^[\w-]+$/.test(routeState.fromPickup) ? `/p/pickups/${routeState.fromPickup}/location` : '/p/family');
     }}>
       <PositionControl coords={coords} setCoords={setCoords} onPlace={(row) => { setCoords(row); if (!name.trim()) setName(row.name.slice(0, 40)); }} />
       <label className="field">{copy.name}<input required value={name} maxLength={40} onChange={(event) => setName(event.target.value)} /></label>
+      <PlaceFallbackField value={fallbackNote} onChange={setFallbackNote} />
       <fieldset><legend>{copy.kind}</legend><div className="chips">{placeKinds.map((item, index) => <button type="button" className="chip" aria-pressed={item === kind} key={item} onClick={() => setKind(item)}>{copy.placeKinds[index]}</button>)}</div></fieldset>
       <label className="field">{copy.radius}<select value={radius} onChange={(event) => setRadius(Number(event.target.value))}>{[...new Set([50, 100, 150, 300, radius])].sort((a, b) => a - b).map((value) => <option value={value} key={value}>{value}m</option>)}</select></label>
       <Button type="submit" disabled={pending || !name.trim() || !coords}>{copy.save}</Button>
@@ -213,8 +220,10 @@ function RoutineList({ overview, state }: Props) {
     }, copy.saved);
     if (updated) { if (active) await run('ensure_occurrences', { p_days: 2 }); setDisableId(undefined); }
   }
-  return <><MobileHeader title={copy.app}><HeaderBell /></MobileHeader><div className="mobile-content guardian-routines"><p className="muted">{dateLabel(now)}</p><div className="guardian-section-heading"><h2>{copy.routine}</h2><Link className="button button--plain" to="/p/routines/new">{copy.add}</Link></div>
-    {state.routines.filter((routine) => overview.routines.some((row) => row.id === routine.id && !row.archived_at)).map((routine) => <RoutineListRow key={routine.id} id={routine.id} name={nameOf(state, routine.requester.id)} schedule={`${routine.days.map((day) => copy.weekdays[day]).join(' ')} ${routine.time}`} place={state.places.find((place) => place.id === routine.placeId)?.label ?? copy.location} assignee={nameOf(state, routine.assigneeId)} car={state.vehicles?.find((car) => car.id === routine.vehicleId)?.name} enabled={routine.enabled} pending={pending} toggle={() => {
+  return <><MobileHeader title={copy.app}><HeaderBell /></MobileHeader><div className="mobile-content guardian-routines"><p className="muted">{dateLabel(now)}</p>
+    <UnavailableRow />
+    <div className="guardian-section-heading"><h2>{copy.routine}</h2><Link className="button button--plain" to="/p/routines/new">{copy.add}</Link></div>
+    {state.routines.filter((routine) => overview.routines.some((row) => row.id === routine.id && !row.archived_at)).map((routine) => <RoutineListRow key={routine.id} id={routine.id} name={nameOf(state, routine.requester.id)} schedule={`${routine.days.map((day) => copy.weekdays[day]).join(' ')} ${routine.time}`} place={state.places.find((place) => place.id === routine.placeId)?.label ?? copy.location} assignee={nameOf(state, routine.assigneeId)} car={state.vehicles?.find((car) => car.id === routine.vehicleId)?.name} gap={routineGap(state, routine, now)} enabled={routine.enabled} pending={pending} toggle={() => {
       if (routine.enabled) setDisableId(routine.id); else void toggle(routine.id, true);
     }} />)}
     {!state.routines.length && <Placeholder text={copy.noRoutines} />}
@@ -389,9 +398,27 @@ function LiveDemoTools({ overview }: { overview: Overview }) {
   </div>{reset && <Confirm title={copy.resetQuestion} confirmLabel={copy.reset} close={() => setReset(false)} danger action={() => run('demo_reset', {}, copy.resetDone)} />}</>;
 }
 
+/** P-19 against the server: `set_unavailable_day`, then the feeds refetch; `held_pickup_ids` feeds the notice. */
+function LiveUnavailable({ overview, state }: Props) {
+  const client = useClient();
+  const query = useQueryClient();
+  const toast = useToast();
+  const member = mapMember(overview.me, overview.family.id);
+  const toggle: DayToggle = async (day, unavailable) => {
+    if (!navigator.onLine) { toast(copy.offlineMessage); return { ok: false, held: 0 }; }
+    try {
+      const result = await client.rpc('set_unavailable_day', unavailableDayParams(day, unavailable), unavailableDaySchema);
+      return { ok: true, held: result.held_pickup_ids.length };
+    } catch (error) { toast(describeError(error)); return { ok: false, held: 0 }; }
+    finally { await query.invalidateQueries(); }
+  };
+  return <UnavailablePage state={state} member={member} toggle={toggle} />;
+}
+
 export function LiveManagement(props: Props) {
   const { overview, path } = props;
   if (path === '/p/routines') return <RoutineList {...props} />;
+  if (path === '/p/unavailable') return <LiveUnavailable {...props} />;
   if (path === '/p/family') return <Family {...props} />;
   if (path === '/p/settings') return <LiveSettings overview={overview} />;
   if (path === '/p/demo') return <LiveDemoTools overview={overview} />;

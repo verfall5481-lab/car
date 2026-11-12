@@ -13,10 +13,10 @@ const hangul = /[ㄱ-ㆎ가-힣]/;
  * makes the test fail so the list cannot go stale.
  */
 const allowed: Record<string, readonly string[]> = {
-  // The browser demo family (F-20): names, places and the example GPS label are fixture data.
+  // The browser demo family (F-20): names, places, the academy's "못 갈 때 안내" (24.7) and the example GPS label are fixture data.
   'demo-domain.ts': [
     '역삼동 근처', '우리 가족', '엄마', '아빠', '이모', '민준', '서연', '할머니',
-    '수학학원', '학원', '학교', '집', '피아노', '정문', '후문 주차장', '후문 벤치 앞', '우리 차',
+    '수학학원', '학원', '학교', '집', '피아노', '정문', '후문 주차장', '후문 벤치 앞', '우리 차', '학원 안에서 기다리기',
   ],
   // Place kinds saved by the demo before the server's English kinds; used only as lookup keys.
   'guardian.tsx': ['학원', '학교'],

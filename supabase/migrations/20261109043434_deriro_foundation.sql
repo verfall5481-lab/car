@@ -113,6 +113,8 @@ create table public.places (
   radius_m int not null default 150 check (radius_m between 50 and 500),
   archived_at timestamptz,
   kind text not null default 'other' check (kind in ('home','school','academy','other')),
+  -- 24.2 "못 갈 때 안내": shown to the requester when nobody can go. Saved trimmed; an empty input is stored as null.
+  fallback_note text check (fallback_note is null or char_length(btrim(fallback_note)) between 1 and 40),
   unique (family_id, id)
 );
 
@@ -191,7 +193,8 @@ create table public.pickups (
   completed_at timestamptz,
   cancelled_at timestamptz,
   cancel_reason text check (cancel_reason in (
-    'cancelled','skipped','not_met','resolved_by_phone','mistake','other_way_home','other','routine_archived','child_cancelled'
+    'cancelled','skipped','not_met','resolved_by_phone','mistake','other_way_home','other','routine_archived','child_cancelled',
+    'no_driver'
   )),
   expired_at timestamptz,
   rider_ready_at timestamptz,
@@ -207,6 +210,10 @@ create table public.pickups (
   raw_lat double precision check (raw_lat between -90 and 90),
   raw_lng double precision check (raw_lng between -180 and 180),
   raw_accuracy_m double precision check (raw_accuracy_m >= 0),
+  -- 24.2 "못 간다고 알리기": the line the requester should do instead, who said so, and the requester's "알겠어".
+  fallback_note text check (fallback_note is null or char_length(btrim(fallback_note)) between 1 and 40),
+  fallback_by_member_id uuid,
+  fallback_ack_at timestamptz,
   unique (family_id, id),
   unique (routine_id, occurrence_date),
   check (num_nonnulls(rider_id, rider_member_id) = 1),
@@ -219,13 +226,18 @@ create table public.pickups (
   check (pickup_point_id is null or place_id is not null),
   check ((location_source = 'saved_point') = (pickup_point_id is not null)),
   check (vehicle_id is null or assignee_member_id is not null),
+  -- A no_driver cancellation always says what to do instead and who said it; only it can be acknowledged.
+  check (cancel_reason is distinct from 'no_driver'
+    or (status = 'cancelled' and fallback_note is not null and fallback_by_member_id is not null)),
+  check (num_nonnulls(fallback_note, fallback_by_member_id, fallback_ack_at) = 0 or cancel_reason = 'no_driver'),
   foreign key (family_id, rider_id) references public.riders(family_id, id),
   foreign key (family_id, rider_member_id) references public.family_members(family_id, id),
   foreign key (family_id, routine_id) references public.routines(family_id, id),
   foreign key (family_id, assignee_member_id) references public.family_members(family_id, id),
   foreign key (family_id, vehicle_id) references public.vehicles(family_id, id),
   foreign key (family_id, place_id) references public.places(family_id, id),
-  foreign key (family_id, place_id, pickup_point_id) references public.pickup_points(family_id, place_id, id)
+  foreign key (family_id, place_id, pickup_point_id) references public.pickup_points(family_id, place_id, id),
+  foreign key (family_id, fallback_by_member_id) references public.family_members(family_id, id)
 );
 alter table public.vehicles add foreign key (family_id, active_pickup_id) references public.pickups(family_id, id);
 create unique index pickups_one_active_rider_request on public.pickups(rider_id)
@@ -284,6 +296,18 @@ create table public.pickup_events (
   foreign key (family_id, pickup_id) references public.pickups(family_id, id) on delete cascade
 );
 create index pickup_events_pickup on public.pickup_events(pickup_id, id);
+
+-- 24.2 "못 가는 날": a date (family time zone) a guardian cannot drive. Written only by set_unavailable_day; family
+-- members read it. Rows of past dates are removed by the daily retention pass (7.3).
+create table public.member_unavailable_days (
+  family_id uuid not null references public.families on delete cascade,
+  member_id uuid not null,
+  day date not null,
+  created_at timestamptz not null default now(),
+  primary key (member_id, day),
+  foreign key (family_id, member_id) references public.family_members(family_id, id) on delete cascade
+);
+create index member_unavailable_days_family on public.member_unavailable_days(family_id, day);
 
 create table public.consents (
   id uuid primary key default gen_random_uuid(),
@@ -459,7 +483,7 @@ begin
   foreach tab in array array[
     'families', 'family_members', 'riders', 'rider_devices', 'vehicles', 'vehicle_states',
     'places', 'pickup_points', 'routines', 'pickups', 'pickup_offers', 'offer_responses', 'pickup_events',
-    'consents', 'vehicle_alerts', 'push_subscriptions', 'notifications_outbox', 'family_feed_changes'
+    'member_unavailable_days', 'consents', 'vehicle_alerts', 'push_subscriptions', 'notifications_outbox', 'family_feed_changes'
   ] loop
     execute format('alter table public.%I enable row level security', tab);
     execute format('revoke all on table public.%I from public, anon, authenticated, service_role', tab);
@@ -467,7 +491,8 @@ begin
   foreach tab in array array['code_secret', 'link_codes', 'rate_limits', 'sms_reservations', 'pickup_declines', 'escalation_checks'] loop
     execute format('alter table deriro_private.%I enable row level security', tab);
   end loop;
-  foreach tab in array array['family_members', 'riders', 'vehicles', 'places', 'pickup_points', 'routines', 'pickups'] loop
+  foreach tab in array array['family_members', 'riders', 'vehicles', 'places', 'pickup_points', 'routines', 'pickups',
+    'member_unavailable_days'] loop
     execute format(
       'create policy family_select on public.%I for select to authenticated using (family_id = (select deriro_private.member_family()))',
       tab
@@ -493,7 +518,7 @@ create policy family_feed_change_select on public.family_feed_changes for select
   using (family_id = (select deriro_private.member_family()));
 
 grant select on public.families, public.places, public.pickup_points, public.routines,
-  public.pickup_offers, public.family_feed_changes to authenticated;
+  public.pickup_offers, public.family_feed_changes, public.member_unavailable_days to authenticated;
 grant select (id, family_id, display_name, role, can_request, can_drive, left_at)
   on public.family_members to authenticated;
 grant select (id, family_id, display_name, kind, consent_basis, archived_at)
@@ -505,7 +530,8 @@ grant select (id, family_id, rider_id, rider_member_id, source, routine_id, occu
   status, assignee_member_id, vehicle_id, place_id, pickup_point_id, location_source, location_confirmed, dest_lat,
   dest_lng, dest_label, pin_note, destination_revision, nav_status, wanted_at, accepted_at, en_route_at, arrived_at,
   completed_at, cancelled_at, cancel_reason, expired_at, rider_ready_at, not_met_reported_at, version, created_at, updated_at,
-  closed_unconfirmed_at, arrived_source, completed_by_kind, cancelled_by_kind) on public.pickups to authenticated;
+  closed_unconfirmed_at, arrived_source, completed_by_kind, cancelled_by_kind, fallback_note, fallback_by_member_id,
+  fallback_ack_at) on public.pickups to authenticated;
 
 do $$
 begin

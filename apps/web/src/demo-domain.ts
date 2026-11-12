@@ -1,16 +1,20 @@
 import {
-  applyPickupAction, canRequestPickup, declineFromVehicle, distanceMetres, guidanceAfter, isActivePickup, isCoordinates,
-  newOccurrencePickup, newRequestPickup, resolveDestination, reviseOccurrence, sweepPickup,
+  applyPickupAction, canRequestPickup, declineFromVehicle, distanceMetres, familyDate, guidanceAfter, isActivePickup, isCoordinates,
+  newOccurrencePickup, newRequestPickup, resolveDestination, reviseForUnavailableDay, reviseOccurrence, setUnavailableDay, sweepPickup,
+  unavailableOn,
 } from '@deriro/contracts';
 import type {
   Actor, Coordinates, Destination, LocationInput, Member, OccurrencePlan, Pickup, PickupAction, PickupEvent, PickupPoint,
-  PickupResult, Place, Requester, Vehicle,
+  PickupResult, Place, Requester, UnavailableDay, Vehicle,
 } from '@deriro/contracts';
 
 export type Person = Member & { name: string; phone?: string };
 export type Rider = { id: string; familyId: string; name: string; phone?: string; kind: 'child' | 'adult'; connected: boolean; archivedAt?: number | null };
-export type DemoPlace = Place & { kind: string };
-export type Routine = { id: string; requester: Requester; placeId: string; days: number[]; time: string; assigneeId: string; vehicleId: string; before: number; enabled: boolean };
+/** `fallbackNote` is the place's "못 갈 때 안내" (24.2), 1-40 characters or absent. */
+export type DemoPlace = Place & { kind: string; fallbackNote?: string | null };
+/** `startDate`/`endDate` (`YYYY-MM-DD`) come from the server; demo routines run every week without them. */
+export type Routine = { id: string; requester: Requester; placeId: string; days: number[]; time: string; assigneeId: string; vehicleId: string; before: number; enabled: boolean;
+  startDate?: string; endDate?: string | null };
 export type History = { pickupId: string; at: number; event: PickupEvent | 'requested' | 'nav_failed' | 'nav_ok' | 'request_declined'; actor: string; detail?: string };
 export type PairCode = { code: string; expiresAt: number };
 export type DemoVehicle = Vehicle & { name: string; range: number | null; rangeCollectedAt?: number | null; rangeStale?: boolean; isDemoValue?: boolean; parked: boolean; online: boolean; navFails: boolean; navError: boolean;
@@ -32,15 +36,25 @@ export type VehicleAlertFacts = { id: string; requiredKm: number; rangeKm: numbe
 /** Live `/v/` only. The demo derives cards from its own data; the live feed already decided them. */
 export type VehicleFeedFacts = { cards: Record<string, VehicleCardFacts>; alert: VehicleAlertFacts | null };
 /**
- * 2: requests carry their family-wide offer and occurrences their notify time, as on the server. A stored demo of an
- * older schema starts afresh. Live states are never stored and keep 1.
+ * Live only: what the server computed for one pickup (24.6). The demo derives the same from its own members and days.
+ * `unavailable`: guardians whose day off is the pickup's date; `nobodyAvailable`: an open pickup without any available
+ * driver; `waitNote`: the destination place's "못 갈 때 안내"; `fallbackByName`: who declared "못 간다고 알리기".
  */
-export const demoSchema = 2;
+export type PickupFacts = { unavailable?: readonly string[]; nobodyAvailable?: boolean; waitNote?: string | null; fallbackByName?: string | null };
+/**
+ * 2: requests carry their family-wide offer and occurrences their notify time, as on the server.
+ * 3: guardians' days off and places' "못 갈 때 안내" (24.7). A stored demo of an older schema starts afresh.
+ * Live states are never stored and keep 1.
+ */
+export const demoSchema = 3;
 export type DemoState = {
   schema: 1 | typeof demoSchema; startedAt: number; advance: number; familyName: string; live?: boolean; vehicles?: DemoVehicle[]; terminalAt?: Record<string, number>; departureAt?: Record<string, number>;
   pickupCapabilities?: Record<string, { cancel?: boolean; notMet?: boolean; ready?: boolean; escalation?: number; coordinates?: boolean }>;
   vehicleFeed?: VehicleFeedFacts;
   smsFailures?: number;
+  /** 24.2 못 가는 날 of every guardian. */
+  unavailableDays?: UnavailableDay[];
+  pickupFacts?: Record<string, PickupFacts>;
   members: Person[]; riders: Rider[]; places: DemoPlace[]; points: PickupPoint[]; routines: Routine[];
   pickups: Pickup[]; occurrences: Record<string, string>; history: History[]; vehicle: DemoVehicle;
   invite: { code: string; riderId: string; expiresAt: number; used: boolean };
@@ -69,7 +83,7 @@ export function freshDemo(startedAt = Date.now()): DemoState {
       { id: 'grandma', familyId, name: '할머니', kind: 'adult', connected: true },
     ],
     places: [
-      { id: 'academy', familyId, label: '수학학원', kind: '학원', lat: 37.5001, lng: 127.0371 },
+      { id: 'academy', familyId, label: '수학학원', kind: '학원', lat: 37.5001, lng: 127.0371, fallbackNote: '학원 안에서 기다리기' },
       { id: 'school', familyId, label: '학교', kind: '학교', lat: 37.5010, lng: 127.0304 },
       { id: 'home', familyId, label: '집', kind: '집', lat: 37.5222, lng: 127.0465 },
       { id: 'piano', familyId, label: '피아노', kind: '학원', lat: 37.5050, lng: 127.0436 },
@@ -83,7 +97,7 @@ export function freshDemo(startedAt = Date.now()): DemoState {
       { id: 'music', requester: { kind: 'rider', id: 'seoyeon' }, placeId: 'piano', days: [1, 3], time: '19:00', assigneeId: '', vehicleId: '', before: 20, enabled: true },
     ],
     vehicle: { id: 'our-car', familyId, name: '우리 차', currentDriverId: 'dad', range: 48, parked: true, online: true, navFails: false, navError: false },
-    pickups: [], occurrences: {}, history: [], invite: { code: '48217730', riderId: 'minjun', expiresAt: demoStart + 10 * minute, used: false },
+    pickups: [], occurrences: {}, history: [], unavailableDays: [], invite: { code: '48217730', riderId: 'minjun', expiresAt: demoStart + 10 * minute, used: false },
   };
 }
 
@@ -107,6 +121,20 @@ export function demoRoutinesToday(state: DemoState, now: number) {
   return state.routines.filter((routine) => routine.enabled && routine.days.includes(weekdayAt(now)) &&
     !state.pickups.some((pickup) => state.occurrences[pickup.id] === routine.id && dayStart(pickup.wantedAt) === dayStart(now)));
 }
+
+/** A pickup's date (24.2): its wanted time as a `YYYY-MM-DD` day of the family's time zone. */
+export const pickupDay = (pickup: Pick<Pickup, 'wantedAt'>) => familyDate(pickup.wantedAt);
+
+/** The guardians who marked `day` (`YYYY-MM-DD`) as a day they cannot drive. */
+export const unavailableOnDay = (state: DemoState, day: string) => unavailableOn(state.unavailableDays ?? [], day);
+
+/** The guardians who cannot drive on a pickup's date: the server's list in live mode, the stored days in the demo. */
+export function unavailableFor(state: DemoState, pickup: Pickup): readonly string[] {
+  return state.pickupFacts?.[pickup.id]?.unavailable ?? unavailableOnDay(state, pickupDay(pickup));
+}
+
+/** The instant of `HH:mm` on a family day (`YYYY-MM-DD`, Seoul). */
+export const dayAt = (day: string, time: string) => Date.parse(`${day}T${time}:00+09:00`);
 
 export function nameOf(state: DemoState, id?: string | null) {
   return state.members.find((member) => member.id === id)?.name ?? state.riders.find((rider) => rider.id === id)?.name ?? '';
@@ -207,22 +235,25 @@ export function createRequest(state: DemoState, requester: Requester, location: 
   return changed({ ...state, pickups: [pickup, ...state.pickups], history: [{ at: now, pickupId: id, event: 'requested', actor: requester.id }, ...state.history] });
 }
 
-/** `ensure_occurrences` for today's occurrence of a routine. */
-export function routineOccurrence(state: DemoState, routine: Routine, now: number, id: string): Change {
-  if (!demoRoutinesToday(state, now).some((item) => item.id === routine.id)) return fail(state, 'ROUTINE_ALREADY');
+/**
+ * `ensure_occurrences` for one occurrence of a routine: today's, unless `wantedAt` names another day. A default driver
+ * who marked that day off does not get it; it is created open and given to nobody else (24.3 회차 생성, S-65).
+ */
+export function routineOccurrence(state: DemoState, routine: Routine, now: number, id: string, wantedAt = routineWanted(routine, now)): Change {
+  if (!demoRoutinesToday(state, wantedAt).some((item) => item.id === routine.id)) return fail(state, 'ROUTINE_ALREADY');
   const destination = resolveDestination(familyId, { source: 'saved_place', placeId: routine.placeId }, state.places);
   if (!destination) return fail(state, 'VALIDATION');
   const pickup = newOccurrencePickup({
-    id, familyId, requester: routine.requester, destination, wantedAt: routineWanted(routine, now),
+    id, familyId, requester: routine.requester, destination, wantedAt,
     assigneeId: routine.assigneeId || null, vehicleId: routine.vehicleId || null, notifyBeforeMin: routine.before,
-  }, { members: state.members, vehicles: [state.vehicle] });
+  }, { members: state.members, vehicles: [state.vehicle], unavailable: unavailableOnDay(state, familyDate(wantedAt)) });
   return changed({ ...state, pickups: [...state.pickups, pickup], occurrences: { ...state.occurrences, [id]: routine.id }, history: [{ at: now, pickupId: id, event: 'requested', actor: 'system' }, ...state.history] });
 }
 
 export type ActionOptions = { confirmedSwitch?: boolean; detail?: string };
 
-function context(state: DemoState, now: number) {
-  return { now, members: state.members, vehicles: [state.vehicle] };
+function context(state: DemoState, now: number, pickup?: Pickup) {
+  return { now, members: state.members, vehicles: [state.vehicle], unavailable: pickup ? unavailableFor(state, pickup) : undefined };
 }
 
 /** Stores a result as the server would: the pickup (also when rejected), the car's guidance and the history rows. */
@@ -250,7 +281,7 @@ export function applyDemoAction(state: DemoState, pickupId: string, actor: Actor
   const refused = vehicleRefusal(state, actor);
   if (refused) return refused;
   if (action.type === 'vehicle_start' && state.vehicle.activePickupId && state.vehicle.activePickupId !== pickup.id && !options.confirmedSwitch) return fail(state, 'VEHICLE_BUSY');
-  const result = applyPickupAction(pickup, actor, action, context(state, now));
+  const result = applyPickupAction(pickup, actor, action, context(state, now, pickup));
   return record(state, pickup, actor, action.type, result, now, options.detail);
 }
 
@@ -286,7 +317,7 @@ export function reviseRoutine(state: DemoState, routine: Routine, now: number, a
   for (const pickup of state.pickups) {
     if (state.occurrences[pickup.id] !== routine.id) continue;
     const plan = archived ? null : occurrencePlan(state, routine, pickup);
-    next = record(next, pickup, { kind: 'system' }, 'revise_routine', reviseOccurrence(pickup, plan, context(next, now)), now).state;
+    next = record(next, pickup, { kind: 'system' }, 'revise_routine', reviseOccurrence(pickup, plan, context(next, now, pickup)), now).state;
   }
   return next;
 }
@@ -304,7 +335,10 @@ export function skipOccurrences(state: DemoState, routine: Routine, memberId: st
   return changed(next);
 }
 
-/** The demo clock: today's occurrences at their notify time, then one scheduler pass over every pickup (9장). */
+/**
+ * The demo clock: today's occurrences at their notify time and tomorrow's ahead, as `ensure_occurrences` keeps them
+ * (F-07; 24.7: P-04 shows the "내일" section), then one scheduler pass over every pickup (9장).
+ */
 export function setDemoTime(state: DemoState, now: number): DemoState {
   let next = state;
   for (const routine of demoRoutinesToday(state, now)) {
@@ -313,8 +347,38 @@ export function setDemoTime(state: DemoState, now: number): DemoState {
       next = routineOccurrence(next, routine, now, `${routine.id}-${wantedAt}`).state;
     }
   }
+  for (const routine of demoRoutinesToday(next, now + day)) {
+    const wantedAt = routineWanted(routine, now + day);
+    next = routineOccurrence(next, routine, now, `${routine.id}-${wantedAt}`, wantedAt).state;
+  }
   for (const pickup of next.pickups) {
     next = record(next, pickup, { kind: 'system' }, 'sweep', sweepPickup(pickup, context(next, now)), now).state;
   }
   return next;
+}
+
+/**
+ * `set_unavailable_day` (24.3 못 가는 날): a guardian marks or clears one of their own days, and that day's untouched
+ * routine occurrences follow (S-65, S-66). The history names the guardian, as the server's `routine_reassigned` does.
+ */
+export function setDemoUnavailableDay(state: DemoState, memberId: string, day: string, unavailable: boolean, now: number): Change {
+  const member = state.members.find((person) => person.id === memberId);
+  const result = setUnavailableDay(state.unavailableDays ?? [], member, { memberId, day, unavailable }, familyDate(now));
+  if (!result.ok) return fail(state, result.code);
+  let next: DemoState = { ...state, unavailableDays: result.days };
+  const dayContext = { ...context(next, now), unavailable: unavailableOn(result.days, day) };
+  for (const pickup of next.pickups) {
+    const routine = state.routines.find((item) => item.id === state.occurrences[pickup.id]);
+    if (!routine || pickupDay(pickup) !== day) continue;
+    const holder = { assigneeId: routine.assigneeId || null, vehicleId: routine.vehicleId || null };
+    next = record(next, pickup, { kind: 'member', id: memberId }, 'set_unavailable_day',
+      reviseForUnavailableDay(pickup, { memberId, unavailable, routine: holder }, dayContext), now).state;
+  }
+  return changed(next);
+}
+
+/** `held_pickup_ids`: the trips a guardian still holds on a day; a day off does not take them away (24.3). */
+export function heldPickupIds(state: DemoState, memberId: string, day: string) {
+  return state.pickups.filter((pickup) => pickup.assigneeId === memberId && ['assigned', 'en_route', 'arrived'].includes(pickup.status) &&
+    pickupDay(pickup) === day).map((pickup) => pickup.id);
 }

@@ -1,25 +1,44 @@
 import { useState } from 'react';
-import { Bell, CalendarDays, CarFront, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, GraduationCap, Info, MapPin, Phone, Smartphone, UserRound } from 'lucide-react';
+import { Bell, CalendarDays, CarFront, Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock3, GraduationCap, Info, MapPin, Phone, Smartphone, UserRound } from 'lucide-react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { isActivePickup, requestRecipients, resolveDestination } from '@deriro/contracts';
 import type { Actor, Coordinates, Destination, Pickup, PickupAction } from '@deriro/contracts';
 import { clock, copy, dateLabel } from './copy.ts';
-import { demoRoutinesToday, destinationLabel, familyId, minute, nameOf, nearbyPlaces, rangeEstimate } from './demo-domain.ts';
-import type { DemoState, Person } from './demo-domain.ts';
-import { guardianOffer } from './guardian-view.ts';
-import { Badge, Button, eventText, HeaderBell, MapPreview, MobileHeader, Placeholder, RadioLine, Row, Sheet, Status, StepCheck, uid, useClock, useCommit, usePickupAction, usePickupOperations, useToast } from './ui.tsx';
+import { demoRoutinesToday, destinationLabel, familyId, minute, nameOf, nearbyPlaces, rangeEstimate, unavailableFor } from './demo-domain.ts';
+import type { DemoState, History, Person } from './demo-domain.ts';
+import { fallbackByName, fallbackKey, guardianOffer, isNobodyAvailable, noDriverSections } from './guardian-view.ts';
+import type { FallbackStage } from './guardian-view.ts';
+import { NoDriverSheet, UnavailableLink } from './no-driver.tsx';
+import { declarationTitle } from './rider-view.ts';
+import { Badge, Button, eventText, HeaderBell, MapPreview, MobileHeader, Placeholder, RadioLine, Row, Sheet, Status, statusLabel, StepCheck, uid, useClock, useCommit, usePickupAction, usePickupOperations, useToast } from './ui.tsx';
 import './guardian.css';
 
 const pickupPath = (pickup: Pickup) => `/p/pickups/${pickup.id}`;
 
 type CardProps = { state: DemoState; member: Person; pickup: Pickup };
-type SheetKind = 'car' | 'cancel' | 'takeover' | 'skip' | 'undo';
+type SheetKind = 'car' | 'cancel' | 'takeover' | 'skip' | 'undo' | 'no_driver';
 
-function PickupActions({ state, member, pickup, compact = false, showOfferResult = false, acknowledge }: CardProps & { compact?: boolean; showOfferResult?: boolean; acknowledge?: () => void }) {
+/** The requester's phone for a `tel:` link: live data only; the demo calls nobody and explains so (24.5). */
+function requesterPhone(state: DemoState, pickup: Pickup) {
+  const people: readonly { id: string; phone?: string }[] = pickup.requester.kind === 'rider' ? state.riders : state.members;
+  return state.live ? people.find((person) => person.id === pickup.requester.id)?.phone : undefined;
+}
+
+function CallRequester({ state, pickup, variant = 'primary' }: { state: DemoState; pickup: Pickup; variant?: 'primary' | 'secondary' }) {
+  const toast = useToast();
+  const phone = requesterPhone(state, pickup);
+  const label = copy.call(nameOf(state, pickup.requester.id));
+  if (phone) return <a className={`button button--${variant}`} href={`tel:${phone}`}><Phone size={19} />{label}</a>;
+  return state.live ? null : <Button variant={variant} onClick={() => toast(copy.callDemo)}><Phone size={19} />{label}</Button>;
+}
+
+/**
+ * `pair`: the "갈 사람 없음" and "내일" cards (24.5), whose two buttons are "내가 갈게" and "못 간다고 알리기".
+ */
+function PickupActions({ state, member, pickup, compact = false, showOfferResult = false, acknowledge, pair = false }: CardProps & { compact?: boolean; showOfferResult?: boolean; acknowledge?: () => void; pair?: boolean }) {
   const [open, setOpen] = useState<SheetKind | null>(null);
   const act = usePickupAction();
   const busy = usePickupOperations()?.pending;
-  const toast = useToast();
   const now = useClock(state);
   const navigate = useNavigate();
   const actor: Actor = { kind: 'member', id: member.id };
@@ -33,10 +52,16 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
   const openPage = (page: 'handoff' | 'location') => navigate(`${pickupPath(pickup)}/${page}`, { state: { returnToPickupHome: compact } });
   const depart = () => { if (!pickup.destination.confirmed) openPage('location'); else void change({ type: 'depart', expectedVersion: version }); };
   const handoff = <Button variant={compact ? 'secondary' : 'plain'} onClick={() => openPage('handoff')}>{copy.handoff}</Button>;
+  // 24.3 #20, #21: any guardian but the requester on an open pickup; only the assignee once it is assigned.
+  const canDeclare = !fromSelf && (pickup.status === 'open' || (pickup.status === 'assigned' && assignee));
+  const declare = (variant: 'secondary' | 'plain') => <Button variant={variant} disabled={busy} onClick={() => setOpen('no_driver')}>{copy.declareNoDriver}</Button>;
+  const offerResult = showOfferResult && acknowledge && assignee && pickup.status === 'assigned';
   let buttons = null;
 
-  if (showOfferResult && acknowledge && assignee && pickup.status === 'assigned') {
+  if (offerResult) {
     buttons = <><Button onClick={acknowledge}>{copy.confirm}</Button><Button variant="secondary" onClick={() => openPage('handoff')}>{copy.handoffAgain}</Button></>;
+  } else if (pair && canDeclare) {
+    buttons = <>{canAccept && <Button disabled={busy} onClick={() => setOpen('car')}>{copy.accept}</Button>}{declare('secondary')}</>;
   } else if (canAccept) {
     buttons = <><Button disabled={busy} onClick={() => setOpen('car')}>{received ? copy.acceptOffer : copy.accept}</Button>
       {received ? <Button variant="secondary" onClick={() => { void change({ type: 'respond_offer', expectedVersion: version, offerId: received.id, response: 'decline' }); }}>{copy.decline}</Button> :
@@ -52,10 +77,8 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
       {pickup.enRouteAt != null && now - pickup.enRouteAt <= 5 * minute && !compact && <Button variant="plain" onClick={() => setOpen('undo')}>{copy.undoDeparture}</Button>}
       {!compact && <Button variant="plain" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button>}</>;
   } else if (assignee && pickup.status === 'arrived') {
-    const people: readonly { id: string; phone?: string }[] = pickup.requester.kind === 'rider' ? state.riders : state.members;
-    const phone = state.live ? people.find((person) => person.id === pickup.requester.id)?.phone : undefined;
-    const callLabel = copy.call(nameOf(state, pickup.requester.id));
-    buttons = <>{pickup.notMetAt != null && compact && (phone ? <a className="button button--primary" href={`tel:${phone}`}><Phone size={19} />{callLabel}</a> : !state.live && <Button onClick={() => toast(copy.callDemo)}><Phone size={19} />{callLabel}</Button>)}
+    const phone = requesterPhone(state, pickup);
+    buttons = <>{pickup.notMetAt != null && compact && <CallRequester state={state} pickup={pickup} />}
       {(!compact || pickup.notMetAt == null || state.live && !phone) && <Button disabled={busy} onClick={() => { void change({ type: 'board', expectedVersion: version }); }}>{copy.boarded}</Button>}
       <Button variant={compact ? 'secondary' : 'plain'} onClick={() => setOpen('cancel')}>{copy.notMet}</Button></>;
   } else if (fromSelf && isActivePickup(pickup)) {
@@ -64,9 +87,19 @@ function PickupActions({ state, member, pickup, compact = false, showOfferResult
     buttons = <><Button disabled={busy} onClick={() => setOpen('takeover')}>{copy.takeOver}</Button><Button variant="secondary" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button></>;
   }
   const close = () => setOpen(null);
+  const footHolds = assignee && pickup.status === 'assigned';
   return <>
     {buttons && <div className={`guardian-actions ${compact && pickup.status !== 'arrived' ? 'guardian-actions--inline' : ''}`}>{buttons}</div>}
-    {!compact && assignee && pickup.status === 'assigned' && <div className="guardian-actions guardian-actions--foot"><Button variant="plain" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button>{pickup.source === 'routine' && <Button variant="plain" onClick={() => setOpen('skip')}>{copy.skipRoutine}</Button>}</div>}
+    {offerResult && canDeclare && <div className="guardian-actions guardian-actions--text">{declare('plain')}</div>}
+    {!compact && (footHolds || canDeclare) && <div className="guardian-actions guardian-actions--foot">
+      {footHolds && <Button variant="plain" onClick={() => setOpen('cancel')}>{copy.cancelPickup}</Button>}
+      {footHolds && pickup.source === 'routine' && <Button variant="plain" onClick={() => setOpen('skip')}>{copy.skipRoutine}</Button>}
+      {canDeclare && declare('plain')}
+    </div>}
+    {open === 'no_driver' && <NoDriverSheet state={state} pickup={pickup} close={close} confirm={async (note) => {
+      const result = await act(pickup, actor, { type: 'no_driver', expectedVersion: version, note }, copy.noDriverSent(nameOf(state, pickup.requester.id)));
+      if (result.ok) close();
+    }} />}
     {(open === 'car' || open === 'takeover') && <AcceptSheet state={state} member={member} close={close} takeover={open === 'takeover' ? nameOf(state, pickup.assigneeId) : undefined} accept={async (vehicleId) => {
       const result = await change(open === 'takeover' ? { type: 'take_over', expectedVersion: version, vehicleId } : received ? { type: 'respond_offer', expectedVersion: version, offerId: received.id, response: 'accept', vehicleId } : { type: 'accept', vehicleId });
       if (result.ok) close();
@@ -115,6 +148,8 @@ function HandoffPage({ state, member, pickup, close, back }: CardProps & { close
   const busy = usePickupOperations()?.pending;
   const car = (state.vehicles ?? [state.vehicle]).find((vehicle) => vehicle.id === pickup.vehicleId);
   const required = car ? rangeEstimate(state, [pickup], car).requiredKm : null;
+  // 24.5 P-06: a guardian whose day off is the pickup's date stays selectable, with "못 가는 날" under the name.
+  const off = unavailableFor(state, pickup);
   return <><MobileHeader back={back} className="guardian-back-header" /><div className="mobile-content guardian-flow">
     <h1>{copy.handoffQuestion}</h1>
     <div className="guardian-handoff-summary"><p className="handoff-place"><strong>{clock(pickup.wantedAt)}</strong> {nameOf(state, pickup.requester.id)}, {destinationLabel(state, pickup.destination)}</p>
@@ -125,7 +160,8 @@ function HandoffPage({ state, member, pickup, close, back }: CardProps & { close
       const hint = vehicle ? [vehicle.name, vehicle.rangeStale ? copy.staleValue : copy.range(vehicle.range),
         estimate?.requiredKm == null ? null : `${copy.rangeNeed(estimate.requiredKm)} (${copy.homeOrigin})`,
         estimate?.verdict === 'low' ? copy.rangeInsufficient : estimate?.verdict === 'check' ? copy.rangeCheck : null].filter(Boolean).join(', ') : copy.noCar;
-      return <RadioLine name="handoff" value={person.id} key={person.id} selected={to} change={setTo} label={person.name} hint={hint} />;
+      return <RadioLine name="handoff" value={person.id} key={person.id} selected={to} change={setTo} label={person.name}
+        hint={off.includes(person.id) ? <><span className="guardian-off-day">{copy.unavailableTitle}</span>{hint}</> : hint} />;
     })}
     {candidates.length > 0 && <RadioLine name="handoff" value="" selected={to} change={setTo} label={copy.handoffAllLabel} hint={copy.firstAccepts} />}
     <div className="stack guardian-flow-gap"><fieldset><legend>{copy.handoffNote}</legend><div className="chips">{copy.handoffNotes.map((item) => <button key={item} type="button" className="chip chip--small" aria-pressed={note === item} onClick={() => setNote(item)}>{item}</button>)}</div></fieldset>
@@ -217,6 +253,56 @@ function PickupCard({ state, member, pickup, now, dismissed, acknowledge }: Card
   </article>;
 }
 
+/** "지금" time of a request asked for right away, otherwise its wanted time. */
+function wantedLabel(state: DemoState, pickup: Pickup) {
+  const requested = state.history.find((event) => event.pickupId === pickup.id && event.event === 'requested')?.at;
+  return pickup.source === 'request' && requested != null && pickup.wantedAt <= requested + minute ? copy.dateNow : clock(pickup.wantedAt);
+}
+
+/** P-04 "갈 사람 없음" (24.5): an open pickup nobody can drive, first in "지금", shaped like the declined-handoff card. */
+function NobodyCard({ state, member, pickup }: CardProps) {
+  const name = nameOf(state, pickup.requester.id);
+  return <article className="pickup-card guardian-card guardian-card--offer" aria-live="polite">
+    <h3><Link to={pickupPath(pickup)} className="guardian-card-title"><CircleAlert aria-hidden="true" className="danger-text" size={21} /><span>{copy.nobodyCardTitle(name)}</span><ChevronRight aria-hidden="true" size={17} /></Link></h3>
+    <p className="guardian-card-schedule"><strong>{wantedLabel(state, pickup)}</strong>{name}, {destinationLabel(state, pickup.destination)}</p>
+    <p className="small muted">{copy.nobodyCardHint}</p>
+    <PickupActions state={state} member={member} pickup={pickup} compact pair />
+  </article>;
+}
+
+/**
+ * P-04 after "못 간다고 알리기" (24.5): 확인 전 (5 minutes), 미확인 5분, 확인됨 (10 minutes). "확인" closes the card on
+ * this screen only; an unacknowledged card closed early comes back as the 5-minute card.
+ */
+function FallbackCard({ state, member, pickup, stage, dismiss }: CardProps & { stage: FallbackStage; dismiss: () => void }) {
+  const name = nameOf(state, pickup.requester.id);
+  const note = pickup.fallbackNote ?? '';
+  const by = fallbackByName(state, pickup);
+  const title = stage === 'acked' ? copy.fallbackAcked(name) : stage === 'unacked' ? copy.fallbackUnacked(name) :
+    pickup.fallbackBy === member.id || !by ? copy.fallbackSent(name) : copy.fallbackSentBy(by, name);
+  const Icon = stage === 'acked' ? CircleCheck : stage === 'unacked' ? CircleAlert : Clock3;
+  return <article className="pickup-card guardian-card guardian-card--offer" aria-live="polite">
+    <h3><Link to={pickupPath(pickup)} className="guardian-card-title"><Icon aria-hidden="true" className={stage === 'acked' ? 'success-text' : stage === 'unacked' ? 'danger-text' : undefined} size={21} /><span>{title}</span><ChevronRight aria-hidden="true" size={17} /></Link></h3>
+    <p className="guardian-card-note">{stage === 'acked' && pickup.fallbackAckAt != null ? copy.fallbackNoteWithTime(note, clock(pickup.fallbackAckAt)) : note}</p>
+    {stage === 'sent' && <p className="place-meta"><span className="guardian-amber-dot" aria-hidden="true" />{copy.fallbackPending(name)}</p>}
+    <div className="guardian-actions guardian-actions--inline">
+      {stage !== 'acked' && <CallRequester state={state} pickup={pickup} />}
+      <Button variant="secondary" onClick={dismiss}>{copy.confirm}</Button>
+    </div>
+  </article>;
+}
+
+/** P-04 "내일" (24.5): tomorrow's routine occurrence nobody holds yet. */
+function TomorrowCard({ state, member, pickup }: CardProps) {
+  const nobody = isNobodyAvailable(state, pickup);
+  return <article className="pickup-card guardian-card guardian-card--later">
+    <h3><Link to={pickupPath(pickup)} className="guardian-card-title guardian-card-schedule"><strong>{clock(pickup.wantedAt)}</strong><span>{nameOf(state, pickup.requester.id)}, {destinationLabel(state, pickup.destination)}</span><ChevronRight aria-hidden="true" size={17} /></Link></h3>
+    <p className={`small ${nobody ? 'danger-text' : 'muted'}`}>{nobody ? copy.tomorrowNobody : copy.tomorrowNoAssignee}</p>
+    <PickupActions state={state} member={member} pickup={pickup} compact pair />
+    <UnavailableLink from="/p/" />
+  </article>;
+}
+
 function TimelineRow({ to, time, name, place, meta }: { to: string; time: string; name: string; place: string; meta?: string }) {
   return <Link className="guardian-timeline-row" to={to}><time>{time}</time><span className="avatar" aria-hidden="true">{name[0]}</span><strong>{name}, {place}</strong>{meta && <small>{meta}</small>}</Link>;
 }
@@ -224,18 +310,22 @@ function TimelineRow({ to, time, name, place, meta }: { to: string; time: string
 export function GuardianHome({ state, member }: { state: DemoState; member: Person }) {
   const now = useClock(state);
   const [dismissedOffers, setDismissedOffers] = useState<string[]>([]);
+  const [dismissedFallbacks, setDismissedFallbacks] = useState<string[]>([]);
   const visible = state.pickups.filter((pickup) => pickup.status !== 'open' || requestRecipients(pickup, state.members).memberIds.includes(member.id) || pickup.requester.id === member.id);
+  // 24장: "갈 사람 없음" first in "지금", declarations until the requester's "알겠어", tomorrow's open occurrences in "내일".
+  const sections = noDriverSections(state, member.id, visible, now, dismissedFallbacks);
+  const special = new Set([...sections.nobody, ...sections.fallback.map(({ pickup }) => pickup), ...sections.tomorrow]);
   // A family-wide offer counts only while pending; once taken or lapsed it is no news, as in the live feed (visible_offer).
   const offerCard = (pickup: Pickup) => pickup.offer != null && (pickup.offer.status === 'pending' || pickup.offer.fromMemberId != null) && !dismissedOffers.includes(pickup.offer.id);
-  const cards = visible.filter((pickup) => isActivePickup(pickup) && (pickup.source === 'request' || pickup.readyAt != null || offerCard(pickup) || pickup.status === 'en_route' || pickup.status === 'arrived' || pickup.status === 'assigned' && pickup.assigneeId === member.id && now >= pickup.wantedAt - 5 * minute));
-  const displayed = visible.filter((pickup) => !cards.includes(pickup));
+  const cards = visible.filter((pickup) => !special.has(pickup) && isActivePickup(pickup) && (pickup.source === 'request' || pickup.readyAt != null || offerCard(pickup) || pickup.status === 'en_route' || pickup.status === 'arrived' || pickup.status === 'assigned' && pickup.assigneeId === member.id && now >= pickup.wantedAt - 5 * minute));
+  const displayed = visible.filter((pickup) => !cards.includes(pickup) && !special.has(pickup));
   const routines = state.live ? [] : demoRoutinesToday(state, now);
   const today = displayed.filter((pickup) => dateLabel(pickup.wantedAt) === dateLabel(now)).sort((a, b) => a.wantedAt - b.wantedAt);
   const tomorrowAt = now + 1440 * minute;
   const tomorrow = displayed.filter((pickup) => dateLabel(pickup.wantedAt) === dateLabel(tomorrowAt)).sort((a, b) => a.wantedAt - b.wantedAt);
   const tomorrowRoutines = state.live ? [] : demoRoutinesToday(state, tomorrowAt);
   function timeline(pickup: Pickup) {
-    return <TimelineRow key={pickup.id} to={pickupPath(pickup)} time={clock(pickup.wantedAt)} name={nameOf(state, pickup.requester.id)} place={destinationLabel(state, pickup.destination)} meta={pickup.status === 'assigned' ? `${copy.assignee} ${nameOf(state, pickup.assigneeId)}` : copy.statuses[pickup.status]} />;
+    return <TimelineRow key={pickup.id} to={pickupPath(pickup)} time={clock(pickup.wantedAt)} name={nameOf(state, pickup.requester.id)} place={destinationLabel(state, pickup.destination)} meta={pickup.status === 'assigned' ? `${copy.assignee} ${nameOf(state, pickup.assigneeId)}` : statusLabel(pickup)} />;
   }
   function routineRows(items: typeof routines) { return [...items].sort((a, b) => a.time.localeCompare(b.time)).map((routine) => <TimelineRow key={routine.id} to={`/p/routines/${routine.id}`} time={routine.time} name={nameOf(state, routine.requester.id)} place={state.places.find((p) => p.id === routine.placeId)?.label ?? copy.location} meta={routine.assigneeId ? `${copy.assignee} ${nameOf(state, routine.assigneeId)}` : copy.noAssignee} />); }
   const own = cards.find((pickup) => pickup.requester.kind === 'member' && pickup.requester.id === member.id);
@@ -245,11 +335,18 @@ export function GuardianHome({ state, member }: { state: DemoState; member: Pers
       <div className="today-line"><p>{dateLabel(now)}</p>{member.canRequest && <Link className="button button--outline button--compact" to="/p/request"><MapPin size={16} />{copy.requestSelf}</Link>}</div>
       {!state.live && !state.notifications && <div className="guardian-notify-banner"><Bell size={17} /><span>{copy.notificationOffBanner}</span><Link to="/p/notifications">{copy.enableNotification}</Link></div>}
       {state.smsFailures != null && state.smsFailures > 0 && <p className="network-banner" role="status">{copy.smsFailureBanner}</p>}
-      <section className="guardian-now"><h2>{copy.now}</h2>
+      <section className="guardian-now" aria-labelledby="guardian-now-title"><h2 id="guardian-now-title">{copy.now}</h2>
+        {sections.nobody.map((pickup) => <NobodyCard key={`${member.id}-${pickup.id}`} state={state} member={member} pickup={pickup} />)}
+        {sections.fallback.map(({ pickup, stage }) => <FallbackCard key={`${member.id}-${pickup.id}`} state={state} member={member} pickup={pickup} stage={stage}
+          dismiss={() => setDismissedFallbacks((previous) => [...previous, fallbackKey(pickup, stage)])} />)}
         {own && <Link to="/p/request" className="pickup-card own-pickup"><Status pickup={own} /><h3>{copy.requestSent}</h3><p className="place-meta"><MapPin size={17} />{destinationLabel(state, own.destination)}</p><span>{copy.detailView} <ChevronRight size={16} /></span></Link>}
+        {!own && sections.ownFallback && <Link to="/p/request" className="pickup-card own-pickup"><Status pickup={sections.ownFallback} /><h3>{declarationTitle(sections.ownFallback, now)}</h3>{sections.ownFallback.fallbackNote && <p className="place-meta">{sections.ownFallback.fallbackNote}</p>}<span>{copy.detailView} <ChevronRight size={16} /></span></Link>}
         {cards.filter((pickup) => pickup !== own).map((pickup) => <PickupCard key={`${member.id}-${pickup.id}`} state={state} member={member} pickup={pickup} now={now} dismissed={Boolean(pickup.offer && dismissedOffers.includes(pickup.offer.id))} acknowledge={(id) => setDismissedOffers((previous) => [...previous, id])} />)}
-        {!cards.length && <div className="quiet-card"><span className="quiet-icon"><CalendarDays size={23} /></span><div><strong>{copy.noneNow}</strong><p>{copy.nextRoutine}</p></div></div>}
+        {!cards.length && !sections.nobody.length && !sections.fallback.length && !sections.ownFallback && <div className="quiet-card"><span className="quiet-icon"><CalendarDays size={23} /></span><div><strong>{copy.noneNow}</strong><p>{copy.nextRoutine}</p></div></div>}
       </section>
+      {sections.tomorrow.length > 0 && <section className="guardian-now guardian-next-day" aria-labelledby="guardian-tomorrow-title"><h2 id="guardian-tomorrow-title">{copy.tomorrow}</h2>
+        {sections.tomorrow.map((pickup) => <TomorrowCard key={`${member.id}-${pickup.id}`} state={state} member={member} pickup={pickup} />)}
+      </section>}
       <section className="schedule"><h2>{copy.todaySchedule}</h2>
         {today.map(timeline)}
         {routineRows(routines)}
@@ -263,6 +360,14 @@ export function GuardianHome({ state, member }: { state: DemoState; member: Pers
       </section>}
     </div>
   </>;
+}
+
+/** P-05 history line: "엄마가 못 간다고 알림" and "민준이 확인" (24.5); other events keep "아빠 담당 정해짐". */
+function recordLine(state: DemoState, event: History) {
+  const actor = nameOf(state, event.actor);
+  if (actor && event.event === 'no_driver') return copy.noDriverRecord(actor);
+  if (actor && event.event === 'fallback_acknowledged') return copy.fallbackAckRecord(actor);
+  return [actor, eventText[event.event]].filter(Boolean).join(' ');
 }
 
 export function PickupDetail({ state, member, mode, pickupId }: { state: DemoState; member: Person; mode?: 'handoff' | 'location'; pickupId?: string }) {
@@ -292,7 +397,7 @@ export function PickupDetail({ state, member, mode, pickupId }: { state: DemoSta
       {pickup.status === 'closed_unconfirmed' && <div className="guardian-terminal"><Status pickup={pickup} /><h2>{copy.closedUnconfirmed}</h2></div>}
       {coordinatesAvailable && pickup.status !== 'closed_unconfirmed' && <MapPreview coords={pickup.destination} marker={place} uncertain={!pickup.destination.confirmed} />}
       {!pickup.destination.confirmed && pickup.assigneeId === member.id && coordinatesAvailable && <Link className="button button--outline" to={`${pickupPath(pickup)}/location`}><MapPin size={17} />{copy.carCheckMap}</Link>}
-      {pickup.status !== 'closed_unconfirmed' && <h2 className={`guardian-detail-state guardian-detail-state--${pickup.status}`}>{pickup.status === 'completed' ? <span><Check size={13} strokeWidth={3} /></span> : <span />}{copy.statuses[pickup.status]}</h2>}
+      {pickup.status !== 'closed_unconfirmed' && <h2 className={`guardian-detail-state guardian-detail-state--${pickup.status}`}>{pickup.status === 'completed' ? <span><Check size={13} strokeWidth={3} /></span> : <span />}{statusLabel(pickup)}</h2>}
       <ol className="detail-steps guardian-detail-steps">{progress.map((kind, index) => {
         const row = events.find((event) => event.event === kind || kind === 'accepted' && (event.event === 'offer_accepted' || event.event === 'took_over'));
         const stamp = row?.at ?? (kind === 'accepted' ? pickup.acceptedAt : kind === 'en_route' ? pickup.enRouteAt : kind === 'arrived' ? pickup.arrivedAt : null);
@@ -304,9 +409,13 @@ export function PickupDetail({ state, member, mode, pickupId }: { state: DemoSta
         <div><dt>{copy.assignee}</dt><dd>{assignee || copy.noAssignee}</dd></div>
         {assignee && <div><dt>{copy.cars}</dt><dd>{vehicle?.name ?? copy.noVehicle}</dd></div>}
         {vehicle && <div><dt>{copy.rangeTitle}</dt><dd>{vehicle.rangeStale ? copy.staleValue : vehicle.range == null ? copy.rangeCheck : `${vehicle.range}km`}{estimate?.requiredKm != null ? `, ${copy.rangeNeed(estimate.requiredKm)}` : ''}{vehicle.rangeCollectedAt && <small>{copy.collectionTime} {clock(vehicle.rangeCollectedAt)}</small>}</dd></div>}
+        {pickup.cancelReason === 'no_driver' && <>
+          <div><dt>{copy.insteadTitle}</dt><dd>{pickup.fallbackNote}</dd></div>
+          <div><dt>{name}</dt><dd>{pickup.fallbackAckAt != null ? copy.ackAt(clock(pickup.fallbackAckAt)) : copy.ackPending}</dd></div>
+        </>}
       </dl>
       <PickupActions key={`${member.id}-${pickup.id}`} pickup={pickup} member={member} state={state} />
-      {events.length > 0 && <section className="schedule guardian-record"><h2>{copy.record}</h2>{events.map((event, index) => <Row key={`${event.at}-${index}`} icon={<time>{clock(event.at)}</time>} title={[nameOf(state, event.actor), eventText[event.event]].filter(Boolean).join(' ')} caption={event.detail} />)}</section>}
+      {events.length > 0 && <section className="schedule guardian-record"><h2>{copy.record}</h2>{events.map((event, index) => <Row key={`${event.at}-${index}`} icon={<time>{clock(event.at)}</time>} title={recordLine(state, event)} caption={event.detail} />)}</section>}
     </div>
   </>;
 }

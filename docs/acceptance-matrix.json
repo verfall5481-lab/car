@@ -138,6 +138,28 @@
         "S-54"
       ],
       "status": "implemented_with_local_evidence_and_external_limits"
+    },
+    {
+      "name": "No available driver: fallback notice, acknowledgement and unavailable days (SPEC 24, v0.4.2)",
+      "features": [
+        "24"
+      ],
+      "scenarios": [
+        "S-57",
+        "S-58",
+        "S-59",
+        "S-60",
+        "S-61",
+        "S-62",
+        "S-63",
+        "S-64",
+        "S-65",
+        "S-66",
+        "S-67",
+        "S-68",
+        "S-69"
+      ],
+      "status": "implemented_with_local_evidence_and_external_limits"
     }
   ],
   "environment": {
@@ -178,5 +200,27 @@
     "External delivery, map, OAuth and CAPTCHA providers",
     "Physical installed PWA and Pleos/AAOS runtime",
     "Vehicle automatic arrival and background/HUD policy"
-  ]
+  ],
+  "v042Addition": {
+    "date": "2026-11-12",
+    "spec": "SPEC.md v0.4.2 section 24",
+    "implementationModel": "Claude Opus 5.5, xhigh (user instruction for this change)",
+    "verified": {
+      "contractsTests": 106,
+      "conformanceScenarios": 64,
+      "pgTap": 2935,
+      "webUnitTests": 51,
+      "chromiumTests": 30,
+      "builds": [
+        "web-demo"
+      ]
+    },
+    "notRun": [
+      "PostgreSQL concurrency suite (no local PostgreSQL on this machine)",
+      "Edge notification templates under Deno (checked with a Node test only)",
+      "Android build and tests (no JDK or Android SDK here; apps/car unchanged, it does not read cancel reasons)",
+      "Real Supabase, pg_cron timers (5 min, 10 min, 20:00), Web Push and SMS delivery"
+    ],
+    "note": "Counts are for the whole suites on 2026-11-12; the top-level 'verified' block is the 2026-11-09 snapshot."
+  }
 }

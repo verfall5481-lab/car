@@ -61,6 +61,7 @@ async function loadMigrations(): Promise<PGlite> {
 export async function runSql(db: PGlite, scenario: Scenario): Promise<Run> {
   const world = new SqlWorld(db, familyOf(scenario));
   await world.seed(scenario.pickups);
+  for (const mark of scenario.unavailable ?? []) await world.markBefore(scenario, mark.member, mark.dayOf);
   const created: Run["created"] = {};
   for (const spec of scenario.pickups) created[spec.key] = await world.create(spec);
   const steps: Run["steps"] = [];
@@ -99,6 +100,10 @@ type PickupRow = {
   announced: boolean;
   wanted_in: number;
   cancel_reason: string | null;
+  fallback_note: string | null;
+  fallback_by_member_id: string | null;
+  fallback_acked: boolean;
+  available: string[];
   dest_lat: number;
   dest_lng: number;
   dest_label: string;
@@ -227,6 +232,16 @@ class SqlWorld {
     return user;
   }
 
+  /** `set_unavailable_day` before any pickup exists, for the date the spec's pickup will have. */
+  async markBefore(scenario: Scenario, member: string, pickupKey: string): Promise<void> {
+    const spec = scenario.pickups.find(({ key }) => key === pickupKey);
+    if (!spec) throw new Error(`unknown pickup ${pickupKey}`);
+    const response = await this.call(member,
+      "select public.set_unavailable_day(((now() + make_interval(mins => $1::int)) at time zone $2)::date, true) as r",
+      [spec.wantedInMin ?? 0, this.zone]);
+    if (!response.ok) throw new Error(`marking ${member} failed: ${JSON.stringify(response)}`);
+  }
+
   async create(spec: PickupSpec): Promise<Outcome> {
     const id = spec.kind === "request" ? await this.request(spec) : await this.routine(spec);
     this.pickupIds.set(spec.key, id);
@@ -251,10 +266,17 @@ class SqlWorld {
     return id;
   }
 
-  /** The row `ensure_occurrences` inserts for a routine occurrence. */
+  /** The row `ensure_occurrences` inserts for a routine occurrence; with `generate`, the row it does insert. */
   private async routine(spec: RoutineSpec): Promise<string> {
     const place = this.family.places.find(({ key }) => key === spec.place);
     if (!place) throw new Error(`unknown place ${spec.place}`);
+    if (spec.generate) {
+      await this.db.query("select deriro_private.ensure_occurrences($1::uuid, 1)", [this.familyId]);
+      const generated = await this.db.query<{ id: string }>("select id from public.pickups where routine_id = $1",
+        [this.id(`routine:${spec.key}`)]);
+      if (!generated.rows[0]) throw new Error(`ensure_occurrences made no occurrence for ${spec.key}`);
+      return generated.rows[0].id;
+    }
     const result = await this.db.query<{ id: string }>(
       `insert into public.pickups(family_id, rider_id, source, routine_id, occurrence_date, status, assignment_round,
          assignee_member_id, vehicle_id, place_id, location_source, location_confirmed, dest_lat, dest_lng, dest_label, wanted_at)
@@ -390,6 +412,17 @@ class SqlWorld {
       }
       case "archive_routine":
         return call("archive_routine($1::uuid)", [this.id(`routine:${key}`)]);
+      case "no_driver":
+        return call("declare_no_driver($1::uuid, $2::int, $3::text)", [pickup, version, spec.note ?? "학원 안에서 기다리기"]);
+      case "ack_fallback":
+        return call("ack_fallback($1::uuid)", [pickup]);
+      case "unavailable_day":
+        // The step pickup's date in the family's zone, or today there plus fromToday.
+        return this.call(step.actor,
+          `select public.set_unavailable_day(case when $2::int is null
+             then (select (p.wanted_at at time zone $3)::date from public.pickups p where p.id = $1::uuid)
+             else (now() at time zone $3)::date + $2::int end, $4::boolean) as r`,
+          [pickup, spec.fromToday ?? null, this.zone, spec.unavailable ?? true]);
     }
   }
 
@@ -398,13 +431,15 @@ class SqlWorld {
     const pickup = await this.db.query<PickupRow>(
       `select status, assignee_member_id, vehicle_id, version, assignment_round, location_confirmed, destination_revision,
          nav_session_id, nav_destination_revision, nav_status, is_customized, cancel_reason, dest_lat, dest_lng, dest_label,
+         fallback_note, fallback_by_member_id, fallback_ack_at is not null as fallback_acked,
+         deriro_private.available_drivers(p) as available,
          routine_offer_created_at is not null as announced, round(extract(epoch from wanted_at - now()) / 60)::int as wanted_in,
          jsonb_build_object('acceptedAt', accepted_at is not null, 'enRouteAt', en_route_at is not null,
            'arrivedAt', arrived_at is not null, 'readyAt', rider_ready_at is not null,
            'notMetAt', not_met_reported_at is not null, 'completedAt', completed_at is not null,
            'cancelledAt', cancelled_at is not null, 'expiredAt', expired_at is not null,
            'closedUnconfirmedAt', closed_unconfirmed_at is not null) as stamps
-       from public.pickups where id = $1`,
+       from public.pickups p where id = $1`,
       [pickupId],
     );
     const offers = await this.db.query<OfferRow>(
@@ -473,6 +508,11 @@ class SqlWorld {
       events: after.events,
       active: Object.fromEntries(after.vehicles.map((vehicle) => [this.key(vehicle.id)!, this.key(vehicle.active_pickup_id)])),
       pickupCount: after.count,
+      cancelReason: row.cancel_reason,
+      fallbackNote: row.fallback_note,
+      fallbackBy: this.key(row.fallback_by_member_id),
+      fallbackAcked: row.fallback_acked,
+      available: row.status === "open" ? memberKeys(row.available) : null,
       sql: {
         navStatus: row.nav_status,
         cancelReason: row.cancel_reason,
@@ -493,7 +533,7 @@ class SqlWorld {
            cancelled_at = cancelled_at - $2::interval, expired_at = expired_at - $2::interval,
            rider_ready_at = rider_ready_at - $2::interval, not_met_reported_at = not_met_reported_at - $2::interval,
            routine_offer_created_at = routine_offer_created_at - $2::interval,
-           closed_unconfirmed_at = closed_unconfirmed_at - $2::interval
+           closed_unconfirmed_at = closed_unconfirmed_at - $2::interval, fallback_ack_at = fallback_ack_at - $2::interval
          where family_id = $1`,
         [this.familyId, by],
       );
